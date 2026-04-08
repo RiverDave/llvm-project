@@ -8,20 +8,26 @@
 
 #include "clang/CIR/FrontendAction/CIRGenAction.h"
 #include "CIRDiagnosticHandler.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/OwningOpRef.h"
-#include "clang/Basic/DiagnosticCodeGen.h"
 #include "TargetLowering/LowerModule.h"
+#include "mlir/Bytecode/BytecodeWriter.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
+#include "clang/Basic/DiagnosticCodeGen.h"
 #include "clang/CIR/Dialect/Passes.h"
 #include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/Basic/TargetInfo.h"
@@ -34,6 +40,7 @@
 #include "clang/CodeGen/BackendUtil.h"
 #include "clang/CodeGen/ModuleLinker.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendOptions.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
@@ -75,13 +82,17 @@ getBackendActionFromOutputType(CIRGenAction::OutputType Action) {
   llvm_unreachable("Unsupported output type!");
 }
 
-static std::unique_ptr<llvm::Module>
-lowerFromCIRToLLVMIR(mlir::ModuleOp MLIRModule, llvm::LLVMContext &LLVMCtx,
-                     bool EnableOpenMP,
-                     llvm::StringRef mlirSaveTempsOutFile = {},
-                     llvm::vfs::FileSystem *fs = nullptr) {
-  return direct::lowerDirectlyFromCIRToLLVMIR(MLIRModule, LLVMCtx, EnableOpenMP,
-                                              mlirSaveTempsOutFile, fs);
+static std::unique_ptr<llvm::Module> lowerFromCIRToLLVMIR(
+    mlir::ModuleOp MLIRModule, llvm::LLVMContext &LLVMCtx,
+    bool EnableOpenMP, llvm::StringRef mlirSaveTempsOutFile = {},
+    llvm::vfs::FileSystem *fs = nullptr, bool enableOffloadSplit = false,
+    llvm::ArrayRef<std::string> offloadArchs = {},
+    bool isDeviceCompilation = false, unsigned deviceOptLevel = 2,
+    const cir::CIROffloadConfig &offloadConfig = {}) {
+  return direct::lowerDirectlyFromCIRToLLVMIR(
+      MLIRModule, LLVMCtx, EnableOpenMP, mlirSaveTempsOutFile, fs,
+      enableOffloadSplit, offloadArchs, isDeviceCompilation, deviceOptLevel,
+      offloadConfig);
 }
 
 static void registerDialects(mlir::DialectRegistry &registry) {
@@ -297,7 +308,13 @@ public:
   void HandleTranslationUnit(ASTContext &C) override {
     Gen->HandleTranslationUnit(C);
 
-    if (!FEOptions.ClangIRDisableCIRVerifier) {
+    // In two-pass offload host-emit-CIR mode the module is intentionally
+    // partial: gpu.launch_func ops reference kernel symbols that live in the
+    // device cc1's CIR and are merged in by MergeOffloadModules.  Skip the
+    // pre-pass verifier here; it runs again after the merge step.
+    bool skipVerifier =
+        FEOptions.ClangIRDisableCIRVerifier || CGO.ClangIROffloadHostEmitCIR;
+    if (!skipVerifier) {
       if (!Gen->verifyModule()) {
         // Verifier output already routed through ClangIRDiagnosticHandler.
         // Only emit the generic fatal if nothing more specific was reported.
@@ -325,9 +342,13 @@ public:
         CI.getDiagnostics().Report(diag::err_cir_to_cir_transform_failed);
         return;
       }
+      // In two-pass host-emit-CIR mode the module is partial (no device
+      // functions yet), so suppress per-pass verification to avoid false
+      // failures from gpu.launch_func referencing not-yet-merged symbols.
+      bool enableVerifier = !FEOptions.ClangIRDisableCIRVerifier &&
+                            !CGO.ClangIROffloadHostEmitCIR;
       if (runCIRToCIRPasses(MlirModule, MlirCtx, C, *lowerModule,
-                            &CI.getVirtualFileSystem(),
-                            !FEOptions.ClangIRDisableCIRVerifier,
+                            &CI.getVirtualFileSystem(), enableVerifier,
                             FEOptions.ClangIREnableIdiomRecognizer,
                             CGO.OptimizationLevel > 0, EnableLibOpt,
                             LibOptOptions, FEOptions.ClangIRCallConvLowering)
@@ -338,6 +359,43 @@ public:
           CI.getDiagnostics().Report(diag::err_cir_to_cir_transform_failed);
         return;
       }
+    }
+
+    // Collect GPU arch(s) and attach offload.target to the module so it
+    // survives serialization to a .cir file.  The -x cir path reads it back
+    // when the arch isn't available from cc1 flags.
+    llvm::SmallVector<std::string> offloadArchs;
+    if (CGO.ClangIROffload) {
+      llvm::StringRef primaryCPU = C.getTargetInfo().getTargetOpts().CPU;
+      if (!primaryCPU.empty() && !primaryCPU.starts_with("x86") &&
+          !primaryCPU.starts_with("generic") && primaryCPU != "x86-64") {
+        offloadArchs.push_back(primaryCPU.str()); // device cc1
+      } else if (!CGO.ClangIROffloadArch.empty()) {
+        offloadArchs.push_back(CGO.ClangIROffloadArch); // host cc1
+      }
+      if (!offloadArchs.empty()) {
+        mlir::Builder b(MlirModule.getContext());
+        llvm::SmallVector<mlir::Attribute> archAttrs;
+        for (const std::string &arch : offloadArchs)
+          archAttrs.push_back(b.getStringAttr(arch));
+        // Store arch list as a plain ArrayAttr of StringAttr under
+        // "offload.target".
+        MlirModule->setAttr("offload.target", b.getArrayAttr(archAttrs));
+      }
+    }
+
+    // Attach fast-math flags as module attributes so they survive .cir
+    // serialization and can be read by the -x cir merge cc1.
+    {
+      const auto &LO = C.getLangOpts();
+      mlir::Builder b(MlirModule.getContext());
+      if (LO.FastMath || LO.UnsafeFPMath)
+        MlirModule->setAttr("cir.unsafe_fp_math", b.getUnitAttr());
+      if (LO.FastMath || (LO.NoHonorNaNs && LO.NoHonorInfs))
+        MlirModule->setAttr("cir.finite_math_only", b.getUnitAttr());
+      if (LO.getDefaultFPContractMode() == LangOptions::FPM_Fast ||
+          LO.getDefaultFPContractMode() == LangOptions::FPM_FastHonorPragmas)
+        MlirModule->setAttr("cir.fp_contract_fast", b.getUnitAttr());
     }
 
     switch (Action) {
@@ -369,9 +427,40 @@ public:
           MlirModule->print(out);
       }
 
+      bool isDeviceCompilation = C.getLangOpts().CUDAIsDevice;
+      cir::CIROffloadConfig offloadConfig;
+      offloadConfig.tightenLaunchBounds = !CGO.ClangIRNoTightenLaunchBounds;
+      offloadConfig.propagateBlockShape = !CGO.ClangIRNoPropagateBlockShape;
+      offloadConfig.propagatePointerFacts =
+          !CGO.ClangIRNoPropagatePointerFacts;
+      offloadConfig.propagateGridCoverage =
+          !CGO.ClangIRNoPropagateGridCoverage;
+      offloadConfig.specializeSharedMemory =
+          !CGO.ClangIRNoSpecializeSharedMemory;
+      offloadConfig.specializeScalarArgs =
+          !CGO.ClangIRNoSpecializeScalarArgs;
+      offloadConfig.multiversionDivisibility =
+          !CGO.ClangIRNoMultiversionDivisibility;
+      if (!CGO.ClangIRDeadKernelAction.empty()) {
+        if (CGO.ClangIRDeadKernelAction == "discard")
+          offloadConfig.deadKernelAction = cir::DeadKernelAction::Discard;
+        else if (CGO.ClangIRDeadKernelAction == "none")
+          offloadConfig.deadKernelAction = cir::DeadKernelAction::None;
+      } else if (CGO.ClangIRNoDeadKernelElim) {
+        offloadConfig.deadKernelAction = cir::DeadKernelAction::None;
+      }
+      offloadConfig.deadArgElimination = !CGO.ClangIRNoDeadArgElim;
+      offloadConfig.promoteConstantArgs = CGO.ClangIRPromoteConstantArgs;
+      offloadConfig.unrollBarrierLoops = !CGO.ClangIRNoUnrollBarrierLoops;
+      const auto &LO = C.getLangOpts();
+      offloadConfig.unsafeMathOpt = LO.FastMath || LO.UnsafeFPMath;
+      offloadConfig.finiteOnly =
+          LO.FastMath || (LO.NoHonorNaNs && LO.NoHonorInfs);
+      offloadConfig.daz = LO.FastMath || LO.UnsafeFPMath;
       std::unique_ptr<llvm::Module> LLVMModule = lowerFromCIRToLLVMIR(
           MlirModule, LLVMCtx, C.getLangOpts().OpenMP, mlirSaveTempsOutFile,
-          &CI.getVirtualFileSystem());
+          &CI.getVirtualFileSystem(), CGO.ClangIROffload, offloadArchs,
+          isDeviceCompilation, CGO.OptimizationLevel, offloadConfig);
 
       if (linkInModules(CI, CGO, *LLVMModule, LinkModules))
         return;
@@ -482,9 +571,47 @@ void CIRGenAction::ExecuteAction() {
     mlirSaveTempsOutFile = std::string(stem);
   }
 
+  const CodeGenOptions &CGO = CI.getCodeGenOpts();
+  llvm::SmallVector<std::string> offloadArchs;
+  if (CGO.ClangIROffload) {
+    if (!CGO.ClangIROffloadArch.empty())
+      offloadArchs.push_back(CGO.ClangIROffloadArch);
+    // Fall back to offload.target on the parsed module (stamped during codegen
+    // or when the .cir file was written).
+    if (offloadArchs.empty())
+      if (auto archs = MLIRMod->getAttrOfType<mlir::ArrayAttr>("offload.target"))
+        for (auto arch : archs)
+          if (auto s = mlir::dyn_cast<mlir::StringAttr>(arch))
+            offloadArchs.push_back(s.getValue().str());
+  }
+  cir::CIROffloadConfig offloadConfig;
+  offloadConfig.tightenLaunchBounds = !CGO.ClangIRNoTightenLaunchBounds;
+  offloadConfig.propagateBlockShape = !CGO.ClangIRNoPropagateBlockShape;
+  offloadConfig.propagatePointerFacts = !CGO.ClangIRNoPropagatePointerFacts;
+  offloadConfig.propagateGridCoverage = !CGO.ClangIRNoPropagateGridCoverage;
+  offloadConfig.specializeSharedMemory = !CGO.ClangIRNoSpecializeSharedMemory;
+  offloadConfig.specializeScalarArgs = !CGO.ClangIRNoSpecializeScalarArgs;
+  offloadConfig.multiversionDivisibility =
+      !CGO.ClangIRNoMultiversionDivisibility;
+  if (!CGO.ClangIRDeadKernelAction.empty()) {
+    if (CGO.ClangIRDeadKernelAction == "discard")
+      offloadConfig.deadKernelAction = cir::DeadKernelAction::Discard;
+    else if (CGO.ClangIRDeadKernelAction == "none")
+      offloadConfig.deadKernelAction = cir::DeadKernelAction::None;
+  } else if (CGO.ClangIRNoDeadKernelElim) {
+    offloadConfig.deadKernelAction = cir::DeadKernelAction::None;
+  }
+  offloadConfig.deadArgElimination = !CGO.ClangIRNoDeadArgElim;
+  offloadConfig.promoteConstantArgs = CGO.ClangIRPromoteConstantArgs;
+  offloadConfig.unrollBarrierLoops = !CGO.ClangIRNoUnrollBarrierLoops;
+  offloadConfig.unsafeMathOpt = MLIRMod->hasAttr("cir.unsafe_fp_math");
+  offloadConfig.finiteOnly = MLIRMod->hasAttr("cir.finite_math_only");
+  offloadConfig.daz = offloadConfig.unsafeMathOpt;
+  offloadConfig.fpContractFast = MLIRMod->hasAttr("cir.fp_contract_fast");
   std::unique_ptr<llvm::Module> LLVMModule = lowerFromCIRToLLVMIR(
       *MLIRMod, *Ctx, /*EnableOpenMP=*/false, mlirSaveTempsOutFile,
-      &CI.getVirtualFileSystem());
+      &CI.getVirtualFileSystem(), CGO.ClangIROffload, offloadArchs,
+      /*isDeviceCompilation=*/false, CGO.OptimizationLevel, offloadConfig);
   if (!LLVMModule)
     return;
 
@@ -500,6 +627,12 @@ void CIRGenAction::ExecuteAction() {
 
 std::unique_ptr<ASTConsumer>
 CIRGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
+  // For pre-built CIR input (-x cir), we bypass AST parsing entirely in
+  // ExecuteAction(). Return a no-op consumer so we don't construct CIRGenModule
+  // (which would fail since there are no CUDA/C++ language opts).
+  if (getCurrentFileKind().getLanguage() == clang::Language::CIR)
+    return std::make_unique<ASTConsumer>();
+
   std::unique_ptr<llvm::raw_pwrite_stream> Out = CI.takeOutputStream();
 
   if (!Out)
