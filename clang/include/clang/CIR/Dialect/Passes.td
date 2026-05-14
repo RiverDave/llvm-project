@@ -184,6 +184,24 @@ def LoweringPrepare : Pass<"cir-lowering-prepare"> {
   let dependentDialects = ["cir::CIRDialect"];
 }
 
+def MaterializeASTFacts : Pass<"cir-materialize-ast-facts", "mlir::ModuleOp"> {
+  let summary = "Cache AST-derived facts as CIR attributes";
+  let description = [{
+    Walks the module and, for any `cir.global` whose `ast` attribute is an
+    AST-backed `ASTVarDeclAttr`, replaces it with a `StaticLocalInfoAttr`
+    that carries the same facts (isLocalVarDecl, TLSKind, isInline,
+    TemplateSpecializationKind) as plain fields. After this pass runs,
+    downstream passes such as `cir-lowering-prepare` can query the
+    `ASTVarDeclInterface` without a live `clang::ASTContext`.
+
+    Intended to run while the AST is still reachable, i.e. immediately after
+    CIRGen and before any step that may serialize CIR for later consumption
+    by a separate tool invocation.
+  }];
+  let constructor = "mlir::createMaterializeASTFactsPass()";
+  let dependentDialects = ["cir::CIRDialect"];
+}
+
 def IdiomRecognizer : Pass<"cir-idiom-recognizer", "mlir::ModuleOp"> {
   let summary = "Raise calls to C/C++ libraries to CIR operations";
   let description = [{

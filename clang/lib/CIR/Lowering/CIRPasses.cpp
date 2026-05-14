@@ -27,6 +27,11 @@ runCIRToCIRPasses(mlir::ModuleOp theModule, mlir::MLIRContext &mlirContext,
   mlir::PassManager pm(&mlirContext);
   pm.addPass(mlir::createCIRCanonicalizePass());
 
+  // Snapshot AST-derived facts into CIR attributes while the ASTContext is
+  // still live, so later passes (notably LoweringPrepare) can run on
+  // serialized CIR without an AST.
+  pm.addPass(mlir::createMaterializeASTFactsPass());
+
   if (enableCIRSimplify)
     pm.addPass(mlir::createCIRSimplifyPass());
 
