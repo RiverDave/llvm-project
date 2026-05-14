@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/CIR/FrontendAction/CIRGenAction.h"
+#include "TargetLowering/LowerModule.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -18,7 +19,10 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
+#include "clang/CIR/Dialect/Passes.h"
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/CIR/CIRGenerator.h"
 #include "clang/CIR/CIRToCIRPasses.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
@@ -38,6 +42,7 @@
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/Internalize.h"
 
@@ -155,6 +160,21 @@ static bool linkInModules(CompilerInstance &CI, CodeGenOptions &CGO,
   return false;
 }
 
+// Build a LowerModule from the surrounding cc1 invocation. Used both for
+// in-process CIRGen (where the same TargetInfo also drives the AST) and for
+// the .cir input path, where there is no AST at all.
+static std::unique_ptr<cir::LowerModule>
+makeLowerModuleFromInvocation(CompilerInstance &CI, mlir::ModuleOp module) {
+  // Clone TargetInfo: LowerModule takes ownership and CI keeps its copy.
+  auto target = std::unique_ptr<clang::TargetInfo>(
+      clang::TargetInfo::CreateTargetInfo(CI.getDiagnostics(),
+                                          CI.getInvocation().getTargetOpts()));
+  if (!target)
+    return nullptr;
+  return cir::createLowerModule(module, CI.getLangOpts(), CI.getCodeGenOpts(),
+                                std::move(target));
+}
+
 class CIRGenConsumer : public clang::ASTConsumer {
 
   virtual void anchor();
@@ -228,9 +248,17 @@ public:
 
     if (!FEOptions.ClangIRDisablePasses) {
       // Setup and run CIR pipeline.
-      if (runCIRToCIRPasses(
-              MlirModule, MlirCtx, C, !FEOptions.ClangIRDisableCIRVerifier,
-              FEOptions.ClangIREnableIdiomRecognizer, CGO.OptimizationLevel > 0)
+      std::unique_ptr<cir::LowerModule> lowerModule =
+          makeLowerModuleFromInvocation(CI, MlirModule);
+      if (!lowerModule) {
+        CI.getDiagnostics().Report(diag::err_cir_to_cir_transform_failed);
+        return;
+      }
+      if (runCIRToCIRPasses(MlirModule, MlirCtx, C, *lowerModule,
+                            &CI.getVirtualFileSystem(),
+                            !FEOptions.ClangIRDisableCIRVerifier,
+                            FEOptions.ClangIREnableIdiomRecognizer,
+                            CGO.OptimizationLevel > 0)
               .failed()) {
         CI.getDiagnostics().Report(diag::err_cir_to_cir_transform_failed);
         return;
