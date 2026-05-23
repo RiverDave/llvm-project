@@ -1,44 +1,58 @@
-# The LLVM Compiler Infrastructure
+# GSoC 2026 — Unified Host/Device CIR for CUDA & HIP
 
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/llvm/llvm-project/badge)](https://securityscorecards.dev/viewer/?uri=github.com/llvm/llvm-project)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8273/badge)](https://www.bestpractices.dev/projects/8273)
-[![libc++](https://github.com/llvm/llvm-project/actions/workflows/libcxx-pr-conformance-tests.yaml/badge.svg?branch=main&event=schedule)](https://github.com/llvm/llvm-project/actions/workflows/libcxx-pr-conformance-tests.yaml?query=event%3Aschedule)
+This is a development fork of [llvm/llvm-project](https://github.com/llvm/llvm-project)
+hosting the GSoC 2026 project **"Combine/Split CIR for CUDA & HIP offloading"**.
 
-Welcome to the LLVM project!
+- **Mentors:** Konstantinos Parasyris, Joseph Huber
+- **Contributor:** David Rivera ([@RiverDave](https://github.com/RiverDave))
 
-This repository contains the source code for LLVM, a toolkit for the
-construction of highly optimized compilers, optimizers, and run-time
-environments.
+## Background
 
-The LLVM project has multiple components. The core of the project is
-itself called "LLVM". This contains all of the tools, libraries, and header
-files needed to process intermediate representations and convert them into
-object files. Tools include an assembler, disassembler, bitcode analyzer, and
-bitcode optimizer.
+LLVM's offload pipeline keeps host and device code separate until it's too late for
+cross-boundary optimization. CIR Combine fixes this with a merge-optimize-split stage:
+both modules are lowered to CIR, merged into a single heterogeneous translation unit,
+optimized together (constant propagation across launch sites, dead kernel elimination,
+launch dimensionality inference), then split back into their respective backend pipelines.
 
-C-like languages use the [Clang](https://clang.llvm.org/) frontend. This
-component compiles C, C++, Objective-C, and Objective-C++ code into LLVM bitcode
--- and from there into object files, using LLVM.
 
-Other components include:
-the [libc++ C++ standard library](https://libcxx.llvm.org),
-the [LLD linker](https://lld.llvm.org), and more.
+The intended flow looks like (We depict tool invocations in this context):
 
-## Getting the Source Code and Building LLVM
+```mermaid
+flowchart LR
+    SRC[".cu / .cpp"]
 
-Consult the
-[Getting Started with LLVM](https://llvm.org/docs/GettingStarted.html#getting-the-source-code-and-building-llvm)
-page for information on building and running LLVM.
+    PRE_H["cc1 (host)<br/>emit pre-lowering CIR"]
+    PRE_70["cc1 (sm_70)<br/>emit pre-lowering CIR"]
+    PRE_90["cc1 (sm_90)<br/>emit pre-lowering CIR"]
 
-For information on how to contribute to the LLVM project, please take a look at
-the [Contributing to LLVM](https://llvm.org/docs/Contributing.html) guide.
+    COMBINE["cir-combine-bundler<br/>--combine"]
+    BUNDLE[("combined.cir<br/>cir.offload.container")]
+    UNBUNDLE["cir-combine-bundler<br/>--unbundle"]
 
-## Getting in touch
+    POST_H["cc1 (host)<br/>post-lowering"]
+    POST_70["cc1 (sm_70)<br/>post-lowering"]
+    POST_90["cc1 (sm_90)<br/>post-lowering"]
 
-Join the [LLVM Discourse forums](https://discourse.llvm.org/), [Discord
-chat](https://discord.gg/xS7Z362),
-[LLVM Office Hours](https://llvm.org/docs/GettingInvolved.html#office-hours) or
-[Regular sync-ups](https://llvm.org/docs/GettingInvolved.html#online-sync-ups).
+    OBJ["host.o"]
+    F70["fatbin_sm_70"]
+    F90["fatbin_sm_90"]
 
-The LLVM project has adopted a [code of conduct](https://llvm.org/docs/CodeOfConduct.html) for
-participants to all modes of communication within the project.
+    SRC --> PRE_H & PRE_70 & PRE_90
+    PRE_H & PRE_70 & PRE_90 --> COMBINE --> BUNDLE --> UNBUNDLE
+    UNBUNDLE --> POST_H --> OBJ
+    UNBUNDLE --> POST_70 --> F70
+    UNBUNDLE --> POST_90 --> F90
+
+    classDef action fill:#bbdefb,stroke:#1565c0,color:#000;
+    classDef artifact fill:#d1c4e9,stroke:#512da8,color:#000;
+    classDef tool fill:#fff9c4,stroke:#f57f17,color:#000;
+    class PRE_H,PRE_70,PRE_90,POST_H,POST_70,POST_90 action;
+    class BUNDLE,OBJ,F70,F90 artifact;
+    class COMBINE,UNBUNDLE tool;
+```
+
+## Status
+
+_Updated 2026-05-23._ Bootstrapping. RFC draft depicting intended
+driver semantics in-progress bundler tool and new driver actions not yet committed.
+
