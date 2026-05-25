@@ -5595,6 +5595,50 @@ def CIR_DerivedMethodOp : CIR_Op<"derived_method", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// OffloadContainerOp
+//===----------------------------------------------------------------------===//
+
+def CIR_OffloadContainerOp : CIR_Op<"offload.container", [
+    NoRegionArguments, NoTerminator, SingleBlock, SymbolTable]> {
+  let summary = "Container for host and device CIR modules";
+  let description = [{
+    `cir.offload.container` groups one host CIR module with one or more device
+    CIR modules for offload-aware analysis and transformation.
+
+    The operation owns a single symbol table region. Each payload must be a
+    nested builtin `module` operation with a `cir.offload.kind` attribute whose
+    value is either `host` or `device`. The first nested operation is the host
+    module, and all remaining nested operations are device modules.
+
+    Example:
+
+    ```mlir
+    module {
+      cir.offload.container {
+        builtin.module @host attributes {cir.offload.kind = "host"} {
+        }
+        builtin.module @device_0 attributes {cir.offload.kind = "device"} {
+        }
+      }
+    }
+    ```
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "$body attr-dict";
+
+  let hasVerifier = 1;
+  let hasLLVMLowering = false;
+
+  let extraClassDeclaration = [{
+    std::optional<mlir::ModuleOp> getHostModule();
+    llvm::iterator_range<mlir::Block::op_iterator<mlir::ModuleOp>>
+    getDeviceModules();
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // ComplexCreateOp
 //===----------------------------------------------------------------------===//
 

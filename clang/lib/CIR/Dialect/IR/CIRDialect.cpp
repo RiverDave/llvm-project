@@ -17,6 +17,7 @@
 #include "clang/CIR/Dialect/IR/CIRTypes.h"
 
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -30,6 +31,8 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/raw_ostream.h"
+#include <optional>
 
 using namespace mlir;
 using namespace cir;
@@ -2265,6 +2268,81 @@ LogicalResult cir::VTTAddrPointOp::verify() {
   if (resultType != resTy)
     return emitOpError("result type must be ")
            << resTy << ", but provided result type is " << resultType;
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// OffloadContainerOp
+//===----------------------------------------------------------------------===//
+
+std::optional<mlir::ModuleOp> cir::OffloadContainerOp::getHostModule() {
+  mlir::Block &body = getBody().front();
+  if (body.empty())
+    return std::nullopt;
+
+  // Host module should be the first op in the parent container region
+  auto module = llvm::dyn_cast<mlir::ModuleOp>(body.front());
+  if (!module)
+    return std::nullopt;
+  return module;
+}
+
+llvm::iterator_range<mlir::Block::op_iterator<mlir::ModuleOp>>
+cir::OffloadContainerOp::getDeviceModules() {
+  mlir::Block &body = getBody().front();
+  auto begin = body.op_begin<mlir::ModuleOp>();
+  auto end = body.op_end<mlir::ModuleOp>();
+  // We represent device modules in the range of ops[1..n-1]
+  // where all elements beside ops[0] are device modules.
+  if (begin != end)
+    ++begin;
+  return {begin, end};
+}
+
+LogicalResult cir::OffloadContainerOp::verify() {
+  std::optional<mlir::ModuleOp> hostModuleOpt = getHostModule();
+  if (!hostModuleOpt)
+    return emitOpError() << "expects host module as the first nested op";
+
+  mlir::ModuleOp hostModule = *hostModuleOpt;
+  auto kind = hostModule->getAttrOfType<mlir::StringAttr>(
+      cir::CIRDialect::getOffloadKindAttrName());
+  if (!kind)
+    return hostModule.emitOpError()
+           << "expects '" << cir::CIRDialect::getOffloadKindAttrName()
+           << "' string attribute";
+
+  if (kind.getValue() != "host")
+    return hostModule.emitOpError()
+           << "expects '" << cir::CIRDialect::getOffloadKindAttrName()
+           << "' value 'host'";
+
+  unsigned numDeviceModules = 0;
+  mlir::Block &body = getBody().front();
+  auto it = body.begin();
+  for (++it; it != body.end(); ++it) {
+    auto module = llvm::dyn_cast<mlir::ModuleOp>(*it);
+    if (!module)
+      return emitOpError() << "expects only nested module operations";
+
+    kind = module->getAttrOfType<mlir::StringAttr>(
+        cir::CIRDialect::getOffloadKindAttrName());
+    if (!kind)
+      return module.emitOpError()
+             << "expects '" << cir::CIRDialect::getOffloadKindAttrName()
+             << "' string attribute";
+
+    if (kind.getValue() != "device")
+      return module.emitOpError()
+             << "expects '" << cir::CIRDialect::getOffloadKindAttrName()
+             << "' value 'device'";
+
+    ++numDeviceModules;
+  }
+
+  if (!numDeviceModules)
+    return emitOpError() << "expects at least one device module";
+
   return success();
 }
 
