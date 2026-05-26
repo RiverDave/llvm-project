@@ -2276,6 +2276,7 @@ LogicalResult cir::VTTAddrPointOp::verify() {
 //===----------------------------------------------------------------------===//
 
 mlir::ModuleOp cir::OffloadContainerOp::getHostModule() {
+  // Host module should be the first op in the parent's container region
   return mlir::cast<mlir::ModuleOp>(getBody().front().front());
 }
 
@@ -2284,6 +2285,8 @@ cir::OffloadContainerOp::getDeviceModules() {
   mlir::Block &body = getBody().front();
   auto begin = body.op_begin<mlir::ModuleOp>();
   auto end = body.op_end<mlir::ModuleOp>();
+  // We represent device modules in the range of ops[1..n-1]
+  // where all elements beside ops[0] are device modules.
   if (begin != end)
     ++begin;
   return {begin, end};
