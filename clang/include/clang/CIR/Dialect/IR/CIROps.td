@@ -5595,6 +5595,21 @@ def CIR_DerivedMethodOp : CIR_Op<"derived_method", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// OffloadKind
+//===----------------------------------------------------------------------===//
+
+def CIR_OffloadKind : CIR_I32EnumAttr<"OffloadKind", "offload kind", [
+  I32EnumAttrCase<"Host",   0, "host">,
+  I32EnumAttrCase<"Device", 1, "device">
+]> {
+  let genSpecializedAttr = 0;
+}
+
+def CIR_OffloadKindAttr : CIR_EnumAttr<CIR_OffloadKind, "offload_kind"> {
+  let summary = "Offload kind (host or device)";
+}
+
+//===----------------------------------------------------------------------===//
 // OffloadContainerOp
 //===----------------------------------------------------------------------===//
 
@@ -5605,20 +5620,20 @@ def CIR_OffloadContainerOp : CIR_Op<"offload.container", [
     `cir.offload.container` groups one host CIR module with one or more device
     CIR modules for offload-aware analysis and transformation.
 
-    The operation owns a single symbol table region. Each payload must be a
-    nested builtin `module` operation with a `cir.offload.kind` attribute whose
-    value is either `host` or `device`. The first nested operation is the host
-    module, and all remaining nested operations are device modules.
+    The body holds nested `builtin.module` operations. The first nested
+    module is the host module and must carry
+    `cir.offload.kind = #cir.offload_kind<host>`. All remaining nested
+    modules are device modules and must carry
+    `cir.offload.kind = #cir.offload_kind<device>`. There must be at least
+    one device module.
 
     Example:
 
     ```mlir
-    module {
-      cir.offload.container {
-        builtin.module @host attributes {cir.offload.kind = "host"} {
-        }
-        builtin.module @device_0 attributes {cir.offload.kind = "device"} {
-        }
+    cir.offload.container {
+      builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      }
+      builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
       }
     }
     ```
@@ -5632,7 +5647,7 @@ def CIR_OffloadContainerOp : CIR_Op<"offload.container", [
   let hasLLVMLowering = false;
 
   let extraClassDeclaration = [{
-    std::optional<mlir::ModuleOp> getHostModule();
+    mlir::ModuleOp getHostModule();
     llvm::iterator_range<mlir::Block::op_iterator<mlir::ModuleOp>>
     getDeviceModules();
   }];
