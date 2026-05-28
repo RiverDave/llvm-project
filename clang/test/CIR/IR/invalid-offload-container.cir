@@ -1,0 +1,60 @@
+// RUN: cir-opt %s -verify-diagnostics -split-input-file
+
+// First nested module has device kind instead of host.
+module {
+  cir.offload.container {
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} { // expected-error {{expects 'cir.offload.kind' value 'host'}}
+    }
+  }
+}
+
+// -----
+
+// Module after the host has host kind instead of device.
+module {
+  cir.offload.container {
+    builtin.module @host_0 attributes {cir.offload.kind = #cir.offload_kind<host>} {
+    }
+    builtin.module @host_1 attributes {cir.offload.kind = #cir.offload_kind<host>} { // expected-error {{expects 'cir.offload.kind' value 'device'}}
+    }
+  }
+}
+
+// -----
+
+// First nested module is missing the kind attribute.
+module {
+  cir.offload.container {
+    builtin.module @host { // expected-error {{expects 'cir.offload.kind' offload kind attribute}}
+    }
+  }
+}
+
+// -----
+
+// Non-module op after the host.
+module {
+  cir.offload.container { // expected-error {{expects only nested builtin.module ops}}
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+    }
+    cir.const #cir.int<0> : !cir.int<s, 32>
+  }
+}
+
+// -----
+
+// Container has no device modules.
+module {
+  cir.offload.container { // expected-error {{expects at least one device module}}
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+    }
+  }
+}
+
+// -----
+
+// Container body is empty.
+module {
+  cir.offload.container { // expected-error {{expects host module as the first nested op}}
+  }
+}
