@@ -36,8 +36,6 @@
 #include <cctype>
 #include <string>
 
-using namespace mlir;
-
 namespace {
 
 llvm::cl::OptionCategory
@@ -84,7 +82,8 @@ std::string sanitizeModuleName(llvm::StringRef target) {
   return name;
 }
 
-std::string makeUnique(StringRef name, llvm::StringMap<unsigned> &seenNames) {
+std::string makeUnique(llvm::StringRef name,
+                       llvm::StringMap<unsigned> &seenNames) {
   unsigned &count = seenNames[name];
   if (count++ == 0)
     return name.str();
@@ -92,6 +91,8 @@ std::string makeUnique(StringRef name, llvm::StringMap<unsigned> &seenNames) {
 }
 
 bool isValidOffloadKind(const clang::OffloadTargetInfo &offloadInfo) {
+  // OffloadTargetInfo rejects CUDA today, even though CUDA-shaped bundle IDs
+  // are valid input for this CIR combine scaffold.
   return offloadInfo.isOffloadKindValid() || offloadInfo.OffloadKind == "cuda";
 }
 
@@ -141,36 +142,38 @@ int validateCommandLine(llvm::SmallVectorImpl<InputTarget> &inputTargets) {
   return 0;
 }
 
-// Dialect registration considering the shape used
-// deserializing cir modules on cir-opt
-void registerDialects(DialectRegistry &registry) {
+void registerDialects(mlir::DialectRegistry &registry) {
+  // Match cir-opt's parser surface: offload CIR inputs may carry OpenMP/LLVM
+  // dialect attrs or ops before this tool wraps them in cir.offload.container.
   registry.insert<mlir::BuiltinDialect, cir::CIRDialect,
                   mlir::memref::MemRefDialect, mlir::LLVM::LLVMDialect,
                   mlir::DLTIDialect, mlir::omp::OpenMPDialect>();
   cir::omp::registerOpenMPExtensions(registry);
 }
 
-OwningOpRef<ModuleOp> parseCIRInput(StringRef inputFileName,
-                                    MLIRContext &context) {
-  ParserConfig parserConfig(&context);
-  return parseSourceFile<ModuleOp>(inputFileName, parserConfig);
+mlir::OwningOpRef<mlir::ModuleOp> parseCIRInput(llvm::StringRef inputFileName,
+                                                mlir::MLIRContext &context) {
+  mlir::ParserConfig parserConfig(&context);
+  return mlir::parseSourceFile<mlir::ModuleOp>(inputFileName, parserConfig);
 }
 
-void setOffloadAttrs(ModuleOp module, StringRef name,
+void setOffloadAttrs(mlir::ModuleOp module, llvm::StringRef name,
                      cir::OffloadKind offloadKind) {
   module.setSymName(name);
   module->setAttr(cir::CIRDialect::getOffloadKindAttrName(),
                   cir::OffloadKindAttr::get(module.getContext(), offloadKind));
 }
 
-OwningOpRef<ModuleOp> combineInputs(ArrayRef<InputTarget> inputTargets,
-                                    MLIRContext &context) {
-  OwningOpRef<ModuleOp> hostModule;
-  SmallVector<OwningOpRef<ModuleOp>, 4> deviceModules;
+mlir::OwningOpRef<mlir::ModuleOp>
+combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
+              mlir::MLIRContext &context) {
+  mlir::OwningOpRef<mlir::ModuleOp> hostModule;
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> deviceModules;
   llvm::StringMap<unsigned> deviceNames;
 
   for (const InputTarget &inputTarget : inputTargets) {
-    OwningOpRef<ModuleOp> module = parseCIRInput(inputTarget.Input, context);
+    mlir::OwningOpRef<mlir::ModuleOp> module =
+        parseCIRInput(inputTarget.Input, context);
     if (!module)
       return {};
 
@@ -186,16 +189,17 @@ OwningOpRef<ModuleOp> combineInputs(ArrayRef<InputTarget> inputTargets,
     deviceModules.push_back(std::move(module));
   }
 
-  auto loc = UnknownLoc::get(&context);
-  OwningOpRef<ModuleOp> combinedModule(ModuleOp::create(loc));
-  OpBuilder builder(&context);
+  auto loc = mlir::UnknownLoc::get(&context);
+  mlir::OwningOpRef<mlir::ModuleOp> combinedModule(mlir::ModuleOp::create(loc));
+  mlir::OpBuilder builder(&context);
   builder.setInsertionPointToStart(combinedModule->getBody());
   auto container = cir::OffloadContainerOp::create(builder, loc);
-  Block &body = container.getBody().emplaceBlock();
+  mlir::Block &body = container.getBody().emplaceBlock();
 
-  // Populate combined module
+  // Preserve the container invariant expected by the verifier: the host module
+  // is the first nested op, followed by device modules in input order.
   body.push_back(hostModule.release().getOperation());
-  for (OwningOpRef<ModuleOp> &deviceModule : deviceModules)
+  for (mlir::OwningOpRef<mlir::ModuleOp> &deviceModule : deviceModules)
     body.push_back(deviceModule.release().getOperation());
 
   return combinedModule;
@@ -209,20 +213,21 @@ int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "CIR host-device combine bundler\n");
 
-  SmallVector<InputTarget, 4> inputTargets;
+  llvm::SmallVector<InputTarget, 4> inputTargets;
   if (int errorCode = validateCommandLine(inputTargets))
     return errorCode;
 
-  DialectRegistry registry;
+  mlir::DialectRegistry registry;
   registerDialects(registry);
-  MLIRContext context(registry);
+  mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  OwningOpRef<ModuleOp> combinedModule = combineInputs(inputTargets, context);
+  mlir::OwningOpRef<mlir::ModuleOp> combinedModule =
+      combineInputs(inputTargets, context);
   if (!combinedModule)
     return reportError("failed to parse input file");
 
-  if (failed(verify(*combinedModule)))
+  if (mlir::failed(mlir::verify(*combinedModule)))
     return reportError("failed to verify combined module");
 
   std::string errorMessage;
@@ -231,7 +236,10 @@ int main(int argc, char **argv) {
   if (!outputFile)
     return reportError(errorMessage);
 
-  // serialize final output
+  // Emit the combined CIR module as textual MLIR.
+  // TODO: Eventually when bytecode support lands for CIR, we should handle
+  // such case here.
+
   combinedModule->print(outputFile->os());
   outputFile->os() << '\n';
   outputFile->keep();
