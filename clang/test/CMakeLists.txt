@@ -114,7 +114,7 @@ list(APPEND CLANG_TEST_DEPS
 
 if(CLANG_ENABLE_CIR)
   list(APPEND CLANG_TEST_DEPS
-    cir-combine-bundler
+    cir-offload-merge
     cir-opt
     cir-translate
     mlir-translate

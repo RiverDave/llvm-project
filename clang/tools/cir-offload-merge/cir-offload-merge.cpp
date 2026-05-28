@@ -1,4 +1,4 @@
-//===-- cir-combine-bundler/cir-combine-bundler.cpp ----------------------===//
+//===-- cir-offload-merge/cir-offload-merge.cpp ----------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -39,26 +39,26 @@
 namespace {
 
 llvm::cl::OptionCategory
-    CIRCombineBundlerCategory("cir-combine-bundler options");
+    CIROffloadMergeCategory("cir-offload-merge options");
 
 llvm::cl::opt<bool> Combine("combine", llvm::cl::desc("Combine CIR inputs"),
-                            llvm::cl::cat(CIRCombineBundlerCategory));
+                            llvm::cl::cat(CIROffloadMergeCategory));
 
 llvm::cl::list<std::string>
     InputFileNames("input",
                    llvm::cl::desc("Input CIR file. Can be specified multiple "
                                   "times for multiple input files."),
-                   llvm::cl::cat(CIRCombineBundlerCategory));
+                   llvm::cl::cat(CIROffloadMergeCategory));
 
 llvm::cl::list<std::string>
     TargetNames("targets", llvm::cl::CommaSeparated,
                 llvm::cl::desc("[<offload kind>-<target triple>,...]"),
-                llvm::cl::cat(CIRCombineBundlerCategory));
+                llvm::cl::cat(CIROffloadMergeCategory));
 
 llvm::cl::opt<std::string>
     OutputFileName("output", llvm::cl::desc("Combined CIR output file"),
                    llvm::cl::init(""),
-                   llvm::cl::cat(CIRCombineBundlerCategory));
+                   llvm::cl::cat(CIROffloadMergeCategory));
 
 struct InputTarget {
   std::string Input;
@@ -210,9 +210,9 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
 
 int main(int argc, char **argv) {
   llvm::InitLLVM y(argc, argv);
-  llvm::cl::HideUnrelatedOptions(CIRCombineBundlerCategory);
+  llvm::cl::HideUnrelatedOptions(CIROffloadMergeCategory);
   llvm::cl::ParseCommandLineOptions(argc, argv,
-                                    "CIR host-device combine bundler\n");
+                                    "CIR host-device offload merge\n");
 
   llvm::SmallVector<InputTarget> inputTargets;
   if (int errorCode = validateCommandLine(inputTargets))
