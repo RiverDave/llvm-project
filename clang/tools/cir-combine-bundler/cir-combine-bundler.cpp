@@ -157,11 +157,11 @@ mlir::OwningOpRef<mlir::ModuleOp> parseCIRInput(llvm::StringRef inputFileName,
   return mlir::parseSourceFile<mlir::ModuleOp>(inputFileName, parserConfig);
 }
 
-void setOffloadAttrs(mlir::ModuleOp module, llvm::StringRef name,
+void setOffloadAttrs(mlir::ModuleOp cirModule, llvm::StringRef name,
                      cir::OffloadKind offloadKind) {
-  module.setSymName(name);
-  module->setAttr(cir::CIRDialect::getOffloadKindAttrName(),
-                  cir::OffloadKindAttr::get(module.getContext(), offloadKind));
+  cirModule.setSymName(name);
+  cirModule->setAttr(cir::CIRDialect::getOffloadKindAttrName(),
+                  cir::OffloadKindAttr::get(cirModule.getContext(), offloadKind));
 }
 
 mlir::OwningOpRef<mlir::ModuleOp>
@@ -172,21 +172,21 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
   llvm::StringMap<unsigned> deviceNames;
 
   for (const InputTarget &inputTarget : inputTargets) {
-    mlir::OwningOpRef<mlir::ModuleOp> module =
+    mlir::OwningOpRef<mlir::ModuleOp> cirModule =
         parseCIRInput(inputTarget.Input, context);
-    if (!module)
+    if (!cirModule)
       return {};
 
     if (inputTarget.IsHost) {
-      setOffloadAttrs(*module, "host", cir::OffloadKind::Host);
-      hostModule = std::move(module);
+      setOffloadAttrs(*cirModule, "host", cir::OffloadKind::Host);
+      hostModule = std::move(cirModule);
       continue;
     }
 
     std::string deviceName =
         makeUnique(sanitizeModuleName(inputTarget.Target), deviceNames);
-    setOffloadAttrs(*module, deviceName, cir::OffloadKind::Device);
-    deviceModules.push_back(std::move(module));
+    setOffloadAttrs(*cirModule, deviceName, cir::OffloadKind::Device);
+    deviceModules.push_back(std::move(cirModule));
   }
 
   auto loc = mlir::UnknownLoc::get(&context);
