@@ -160,8 +160,9 @@ mlir::OwningOpRef<mlir::ModuleOp> parseCIRInput(llvm::StringRef inputFileName,
 void setOffloadAttrs(mlir::ModuleOp cirModule, llvm::StringRef name,
                      cir::OffloadKind offloadKind) {
   cirModule.setSymName(name);
-  cirModule->setAttr(cir::CIRDialect::getOffloadKindAttrName(),
-                  cir::OffloadKindAttr::get(cirModule.getContext(), offloadKind));
+  cirModule->setAttr(
+      cir::CIRDialect::getOffloadKindAttrName(),
+      cir::OffloadKindAttr::get(cirModule.getContext(), offloadKind));
 }
 
 mlir::OwningOpRef<mlir::ModuleOp>
@@ -213,14 +214,17 @@ int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "CIR host-device combine bundler\n");
 
-  llvm::SmallVector<InputTarget, 4> inputTargets;
+  llvm::SmallVector<InputTarget> inputTargets;
   if (int errorCode = validateCommandLine(inputTargets))
     return errorCode;
 
   mlir::DialectRegistry registry;
   registerDialects(registry);
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
+  mlir::MLIRContext context;
+  context.loadDialect<cir::CIRDialect, mlir::memref::MemRefDialect,
+                      mlir::LLVM::LLVMDialect, mlir::DLTIDialect,
+                      mlir::omp::OpenMPDialect>();
+  context.appendDialectRegistry(registry);
 
   mlir::OwningOpRef<mlir::ModuleOp> combinedModule =
       combineInputs(inputTargets, context);
