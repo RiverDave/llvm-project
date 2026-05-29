@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+///
+/// \file
+/// This tool merges CIR modules coming from CUDA/HIP programs
+/// into a single top-level modulecontaining a cir.offload.container operation.
+///
+//===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -38,8 +44,7 @@
 
 namespace {
 
-llvm::cl::OptionCategory
-    CIROffloadMergeCategory("cir-offload-merge options");
+llvm::cl::OptionCategory CIROffloadMergeCategory("cir-offload-merge options");
 
 llvm::cl::opt<bool> Combine("combine", llvm::cl::desc("Combine CIR inputs"),
                             llvm::cl::cat(CIROffloadMergeCategory));
@@ -57,8 +62,7 @@ llvm::cl::list<std::string>
 
 llvm::cl::opt<std::string>
     OutputFileName("output", llvm::cl::desc("Combined CIR output file"),
-                   llvm::cl::init(""),
-                   llvm::cl::cat(CIROffloadMergeCategory));
+                   llvm::cl::init(""), llvm::cl::cat(CIROffloadMergeCategory));
 
 struct InputTarget {
   std::string Input;
