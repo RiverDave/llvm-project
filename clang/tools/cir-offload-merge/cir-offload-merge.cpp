@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// This tool merges CIR modules coming from CUDA/HIP programs
-/// into a single top-level modulecontaining a cir.offload.container operation.
+/// This tool merges target-specific CIR modules into a single top-level module
+/// containing a cir.offload.container operation.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -17,6 +17,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -25,6 +26,7 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
+#include "clang/Basic/TargetID.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/OpenMP/RegisterOpenMPExtensions.h"
 #include "clang/Driver/OffloadBundler.h"
@@ -34,12 +36,14 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cctype>
+#include <optional>
 #include <string>
 
 namespace {
@@ -48,6 +52,9 @@ llvm::cl::OptionCategory CIROffloadMergeCategory("cir-offload-merge options");
 
 llvm::cl::opt<bool> Combine("combine", llvm::cl::desc("Combine CIR inputs"),
                             llvm::cl::cat(CIROffloadMergeCategory));
+
+llvm::cl::opt<bool> Split("split", llvm::cl::desc("Split combined CIR input"),
+                          llvm::cl::cat(CIROffloadMergeCategory));
 
 llvm::cl::list<std::string>
     InputFileNames("input",
@@ -60,14 +67,22 @@ llvm::cl::list<std::string>
                 llvm::cl::desc("[<offload kind>-<target triple>,...]"),
                 llvm::cl::cat(CIROffloadMergeCategory));
 
-llvm::cl::opt<std::string>
-    OutputFileName("output", llvm::cl::desc("Combined CIR output file"),
-                   llvm::cl::init(""), llvm::cl::cat(CIROffloadMergeCategory));
+llvm::cl::list<std::string>
+    OutputFileNames("output",
+                    llvm::cl::desc("Output CIR file. Can be specified "
+                                   "multiple times in split mode."),
+                    llvm::cl::cat(CIROffloadMergeCategory));
 
 struct InputTarget {
   std::string Input;
   std::string Target;
   bool IsHost = false;
+};
+
+struct TargetOutput {
+  std::string Target;
+  std::string Output;
+  bool Written = false;
 };
 
 int reportError(const llvm::Twine &message) {
@@ -100,15 +115,63 @@ bool isValidOffloadKind(const clang::OffloadTargetInfo &offloadInfo) {
   return offloadInfo.isOffloadKindValid() || offloadInfo.OffloadKind == "cuda";
 }
 
-int validateCommandLine(llvm::SmallVectorImpl<InputTarget> &inputTargets) {
-  if (!Combine)
-    return reportError("missing required --combine");
+bool isValidTarget(llvm::StringRef target,
+                   const clang::OffloadBundlerConfig &bundlerConfig) {
+  if (!clang::checkOffloadBundleID(target))
+    return false;
+
+  clang::OffloadTargetInfo offloadInfo(target, bundlerConfig);
+  return isValidOffloadKind(offloadInfo) && offloadInfo.isTripleValid();
+}
+
+bool isCompatibleTarget(llvm::StringRef bundleID, llvm::StringRef target,
+                        const clang::OffloadBundlerConfig &bundlerConfig) {
+  clang::OffloadTargetInfo bundleInfo(bundleID, bundlerConfig);
+  clang::OffloadTargetInfo targetInfo(target, bundlerConfig);
+  if (bundleInfo == targetInfo)
+    return true;
+
+  // Match clang-offload-bundler's code-object compatibility policy: exact
+  // bundle IDs are not required when the target ID feature sets are compatible.
+  if (!bundleInfo.isOffloadKindCompatible(targetInfo.OffloadKind) ||
+      !bundleInfo.Triple.isCompatibleWith(targetInfo.Triple))
+    return false;
+
+  llvm::StringMap<bool> bundleFeatureMap;
+  llvm::StringMap<bool> targetFeatureMap;
+  std::optional<llvm::StringRef> bundleProcessor = clang::parseTargetID(
+      bundleInfo.Triple, bundleInfo.TargetID, &bundleFeatureMap);
+  std::optional<llvm::StringRef> targetProcessor = clang::parseTargetID(
+      targetInfo.Triple, targetInfo.TargetID, &targetFeatureMap);
+  if (!bundleProcessor || !targetProcessor ||
+      bundleProcessor.value() != targetProcessor.value())
+    return false;
+
+  if (bundleFeatureMap.getNumItems() > targetFeatureMap.getNumItems())
+    return false;
+
+  for (const auto &bundleFeature : bundleFeatureMap) {
+    auto targetFeature = targetFeatureMap.find(bundleFeature.getKey());
+    if (targetFeature == targetFeatureMap.end() ||
+        targetFeature->getValue() != bundleFeature.getValue())
+      return false;
+  }
+
+  return true;
+}
+
+int validateCombineCommandLine(
+    llvm::SmallVectorImpl<InputTarget> &inputTargets) {
+  if (Combine == Split)
+    return reportError("expected exactly one of --combine or --split");
   if (InputFileNames.empty())
     return reportError("missing required --input");
   if (TargetNames.empty())
     return reportError("missing required --targets");
-  if (OutputFileName.empty())
+  if (OutputFileNames.empty())
     return reportError("missing required --output");
+  if (OutputFileNames.size() != 1)
+    return reportError("combine mode expects exactly one output");
   if (InputFileNames.size() != TargetNames.size())
     return reportError("number of input files and targets should match in "
                        "combine mode");
@@ -122,13 +185,10 @@ int validateCommandLine(llvm::SmallVectorImpl<InputTarget> &inputTargets) {
     if (!seenTargets.insert(target).second)
       return reportError("duplicate target '" + target + "'");
 
-    if (!clang::checkOffloadBundleID(target))
+    if (!isValidTarget(target, bundlerConfig))
       return reportError("invalid target '" + target + "'");
 
     clang::OffloadTargetInfo offloadInfo(target, bundlerConfig);
-    if (!isValidOffloadKind(offloadInfo) || !offloadInfo.isTripleValid())
-      return reportError("invalid target '" + target + "'");
-
     bool isHost = offloadInfo.hasHostKind();
     if (isHost)
       ++numHostTargets;
@@ -142,6 +202,40 @@ int validateCommandLine(llvm::SmallVectorImpl<InputTarget> &inputTargets) {
     return reportError("expected exactly one host target");
   if (numDeviceTargets == 0)
     return reportError("expected at least one device target");
+
+  return 0;
+}
+
+int validateSplitCommandLine(
+    llvm::SmallVectorImpl<TargetOutput> &targetOutputs) {
+  if (Combine == Split)
+    return reportError("expected exactly one of --combine or --split");
+  if (InputFileNames.empty())
+    return reportError("missing required --input");
+  if (InputFileNames.size() != 1)
+    return reportError("split mode expects exactly one input");
+  if (TargetNames.empty())
+    return reportError("missing required --targets");
+  if (OutputFileNames.empty())
+    return reportError("missing required --output");
+  if (OutputFileNames.size() != TargetNames.size())
+    return reportError("number of output files and targets should match in "
+                       "split mode");
+
+  clang::OffloadBundlerConfig bundlerConfig;
+  llvm::StringSet<> seenTargets;
+  llvm::StringSet<> seenOutputs;
+
+  for (auto [target, output] : llvm::zip_equal(TargetNames, OutputFileNames)) {
+    if (!seenTargets.insert(target).second)
+      return reportError("duplicate target '" + target + "'");
+    if (!seenOutputs.insert(output).second)
+      return reportError("duplicate output '" + output + "'");
+    if (!isValidTarget(target, bundlerConfig))
+      return reportError("invalid target '" + target + "'");
+
+    targetOutputs.push_back({target, output, false});
+  }
 
   return 0;
 }
@@ -162,11 +256,15 @@ mlir::OwningOpRef<mlir::ModuleOp> parseCIRInput(llvm::StringRef inputFileName,
 }
 
 void setOffloadAttrs(mlir::ModuleOp cirModule, llvm::StringRef name,
-                     cir::OffloadKind offloadKind) {
+                     cir::OffloadKind offloadKind, llvm::StringRef bundleID) {
   cirModule.setSymName(name);
   cirModule->setAttr(
       cir::CIRDialect::getOffloadKindAttrName(),
       cir::OffloadKindAttr::get(cirModule.getContext(), offloadKind));
+  // This is bundler metadata used to recover output routing during split, not
+  // target lowering state for the CIR module.
+  cirModule->setAttr(cir::CIRDialect::getOffloadBundleIDAttrName(),
+                     mlir::StringAttr::get(cirModule.getContext(), bundleID));
 }
 
 mlir::OwningOpRef<mlir::ModuleOp>
@@ -183,14 +281,16 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
       return {};
 
     if (inputTarget.IsHost) {
-      setOffloadAttrs(*cirModule, "host", cir::OffloadKind::Host);
+      setOffloadAttrs(*cirModule, "host", cir::OffloadKind::Host,
+                      inputTarget.Target);
       hostModule = std::move(cirModule);
       continue;
     }
 
     std::string deviceName =
         makeUnique(sanitizeModuleName(inputTarget.Target), deviceNames);
-    setOffloadAttrs(*cirModule, deviceName, cir::OffloadKind::Device);
+    setOffloadAttrs(*cirModule, deviceName, cir::OffloadKind::Device,
+                    inputTarget.Target);
     deviceModules.push_back(std::move(cirModule));
   }
 
@@ -210,6 +310,94 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
   return combinedModule;
 }
 
+int writeModuleToOutput(mlir::ModuleOp module, llvm::StringRef outputFileName) {
+  std::string errorMessage;
+  std::unique_ptr<llvm::ToolOutputFile> outputFile =
+      mlir::openOutputFile(outputFileName, &errorMessage);
+  if (!outputFile)
+    return reportError(errorMessage);
+
+  // Emit the combined CIR module as textual MLIR.
+  // TODO: Eventually when bytecode support lands for CIR, we should handle
+  // such case here.
+  module->print(outputFile->os());
+  outputFile->os() << '\n';
+  outputFile->keep();
+  return 0;
+}
+
+int splitInput(llvm::StringRef inputFileName,
+               llvm::MutableArrayRef<TargetOutput> targetOutputs,
+               mlir::MLIRContext &context) {
+  mlir::OwningOpRef<mlir::ModuleOp> cirModule =
+      parseCIRInput(inputFileName, context);
+  if (!cirModule)
+    return reportError("failed to parse input file");
+
+  if (mlir::failed(mlir::verify(*cirModule)))
+    return reportError("failed to verify input module");
+
+  cir::OffloadContainerOp container;
+  for (cir::OffloadContainerOp candidate :
+       cirModule->getBody()->getOps<cir::OffloadContainerOp>()) {
+    if (container)
+      return reportError("expected exactly one direct top-level "
+                         "cir.offload.container");
+    container = candidate;
+  }
+  if (!container)
+    return reportError(
+        "expected exactly one direct top-level cir.offload.container");
+
+  clang::OffloadBundlerConfig bundlerConfig;
+  llvm::StringSet<> seenBundleIDs;
+
+  for (mlir::ModuleOp nestedModule :
+       container.getBody().front().getOps<mlir::ModuleOp>()) {
+    auto bundleIDAttr = nestedModule->getAttrOfType<mlir::StringAttr>(
+        cir::CIRDialect::getOffloadBundleIDAttrName());
+    if (!bundleIDAttr)
+      return reportError("nested module is missing 'cir.offload.bundle_id'");
+
+    llvm::StringRef bundleID = bundleIDAttr.getValue();
+    if (!seenBundleIDs.insert(bundleID).second)
+      return reportError(llvm::Twine("duplicate module bundle ID '") +
+                         bundleID + "'");
+    if (!isValidTarget(bundleID, bundlerConfig))
+      return reportError(llvm::Twine("invalid module bundle ID '") + bundleID +
+                         "'");
+
+    // The requested --targets/--output pairs only form the output map. The
+    // stored bundle ID decides where this nested module is written.
+    TargetOutput *match = nullptr;
+    for (TargetOutput &targetOutput : targetOutputs) {
+      if (!isCompatibleTarget(bundleID, targetOutput.Target, bundlerConfig))
+        continue;
+      if (match)
+        return reportError(llvm::Twine("module bundle ID '") + bundleID +
+                           "' matches multiple requested targets");
+      match = &targetOutput;
+    }
+
+    if (!match)
+      continue;
+
+    if (match->Written)
+      return reportError("multiple modules match target '" + match->Target +
+                         "'");
+    if (int errorCode = writeModuleToOutput(nestedModule, match->Output))
+      return errorCode;
+    match->Written = true;
+  }
+
+  for (const TargetOutput &targetOutput : targetOutputs)
+    if (!targetOutput.Written)
+      return reportError("can't find module for target '" +
+                         targetOutput.Target + "'");
+
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -217,10 +405,6 @@ int main(int argc, char **argv) {
   llvm::cl::HideUnrelatedOptions(CIROffloadMergeCategory);
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "CIR host-device offload merge\n");
-
-  llvm::SmallVector<InputTarget> inputTargets;
-  if (int errorCode = validateCommandLine(inputTargets))
-    return errorCode;
 
   mlir::DialectRegistry registry;
   registerDialects(registry);
@@ -230,26 +414,25 @@ int main(int argc, char **argv) {
                       mlir::omp::OpenMPDialect>();
   context.appendDialectRegistry(registry);
 
-  mlir::OwningOpRef<mlir::ModuleOp> combinedModule =
-      combineInputs(inputTargets, context);
-  if (!combinedModule)
-    return reportError("failed to parse input file");
+  if (Combine) {
+    llvm::SmallVector<InputTarget, 4> inputTargets;
+    if (int errorCode = validateCombineCommandLine(inputTargets))
+      return errorCode;
 
-  if (mlir::failed(mlir::verify(*combinedModule)))
-    return reportError("failed to verify combined module");
+    mlir::OwningOpRef<mlir::ModuleOp> combinedModule =
+        combineInputs(inputTargets, context);
+    if (!combinedModule)
+      return reportError("failed to parse input file");
 
-  std::string errorMessage;
-  std::unique_ptr<llvm::ToolOutputFile> outputFile =
-      mlir::openOutputFile(OutputFileName, &errorMessage);
-  if (!outputFile)
-    return reportError(errorMessage);
+    if (mlir::failed(mlir::verify(*combinedModule)))
+      return reportError("failed to verify combined module");
 
-  // Emit the combined CIR module as textual MLIR.
-  // TODO: Eventually when bytecode support lands for CIR, we should handle
-  // such case here.
+    return writeModuleToOutput(*combinedModule, OutputFileNames.front());
+  }
 
-  combinedModule->print(outputFile->os());
-  outputFile->os() << '\n';
-  outputFile->keep();
-  return 0;
+  llvm::SmallVector<TargetOutput, 4> targetOutputs;
+  if (int errorCode = validateSplitCommandLine(targetOutputs))
+    return errorCode;
+
+  return splitInput(InputFileNames.front(), targetOutputs, context);
 }
