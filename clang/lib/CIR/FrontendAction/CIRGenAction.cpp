@@ -333,7 +333,7 @@ getOutputStream(CompilerInstance &CI, StringRef InFile,
   llvm_unreachable("Invalid CIRGenAction::OutputType");
 }
 
-bool CIRGenAction::hasIRSupport() const { return true; }
+bool CIRGenAction::hasCIRSupport() const { return true; }
 
 void CIRGenAction::ExecuteAction() {
   if (getCurrentFileKind().getLanguage() != Language::CIR) {

@@ -62,7 +62,7 @@ protected:
 public:
   ~CIRGenAction() override;
 
-  bool hasIRSupport() const override;
+  bool hasCIRSupport() const override;
 
   OutputType Action;
 };

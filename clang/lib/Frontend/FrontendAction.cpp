@@ -1001,10 +1001,15 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     CI.getSourceManager().setAllFilesAreTransient(true);
 
   // Serialized IR files bypass the rest of source frontend initialization.
-  if (Input.getKind().getLanguage() == Language::LLVM_IR ||
-      Input.getKind().getLanguage() == Language::CIR) {
-    if (!hasIRSupport()) {
+  Language InputLang = Input.getKind().getLanguage();
+  if (InputLang == Language::LLVM_IR || InputLang == Language::CIR) {
+    if (InputLang == Language::LLVM_IR && !hasIRSupport()) {
       CI.getDiagnostics().Report(diag::err_ast_action_on_llvm_ir)
+          << Input.getFile();
+      return false;
+    }
+    if (InputLang == Language::CIR && !hasCIRSupport()) {
+      CI.getDiagnostics().Report(diag::err_ast_action_on_cir)
           << Input.getFile();
       return false;
     }
@@ -1516,6 +1521,9 @@ bool WrapperFrontendAction::hasASTFileSupport() const {
 }
 bool WrapperFrontendAction::hasIRSupport() const {
   return WrappedAction->hasIRSupport();
+}
+bool WrapperFrontendAction::hasCIRSupport() const {
+  return WrappedAction->hasCIRSupport();
 }
 bool WrapperFrontendAction::hasCodeCompletionSupport() const {
   return WrappedAction->hasCodeCompletionSupport();

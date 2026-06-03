@@ -5,6 +5,7 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -x cir %t.cir -S -o - | FileCheck %s --check-prefix=ASM
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -x cir %t.cir -emit-obj -o %t.o
 // RUN: llvm-objdump -t %t.o | FileCheck %s --check-prefix=OBJ
+// RUN: not %clang_cc1 -triple x86_64-unknown-linux-gnu -x cir %t.cir -fsyntax-only 2>&1 | FileCheck %s --check-prefix=NO-AST
 // RUN: echo "not cir" > %t.invalid.cir
 // RUN: not %clang_cc1 -triple x86_64-unknown-linux-gnu -x cir %t.invalid.cir -emit-llvm -o - 2>&1 | FileCheck %s --check-prefix=INVALID
 
@@ -27,5 +28,7 @@ int f(void) {
 
 // OBJ: .data
 // OBJ-SAME: x
+
+// NO-AST: cannot apply AST actions to CIR file
 
 // INVALID: failed to parse CIR input
