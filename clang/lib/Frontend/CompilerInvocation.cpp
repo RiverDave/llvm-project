@@ -3316,6 +3316,11 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
 
   Opts.DashX = DashX;
 
+  if (llvm::any_of(Opts.Inputs, [](const FrontendInputFile &Input) {
+        return Input.getKind().getLanguage() == Language::CIR;
+      }))
+    Opts.UseClangIRPipeline = true;
+
   // CIR is a source-level frontend pipeline. When the input is already LLVM IR
   // (e.g. during the backend phase of OpenMP offloading), the standard LLVM
   // backend should be used instead.
