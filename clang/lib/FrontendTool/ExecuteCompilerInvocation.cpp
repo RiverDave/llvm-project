@@ -60,6 +60,13 @@ CreateFrontendBaseAction(CompilerInstance &CI) {
   if (!UseCIR && EmitsCIR)
     llvm::report_fatal_error("-emit-cir and only valid when using -fclangir");
 
+#if !CLANG_ENABLE_CIR
+  if (UseCIR) {
+    CI.getDiagnostics().Report(diag::err_fe_cir_not_built);
+    return nullptr;
+  }
+#endif
+
   switch (CI.getFrontendOpts().ProgramAction) {
   case ASTDeclList:            return std::make_unique<ASTDeclListAction>();
   case ASTDump:                return std::make_unique<ASTDumpAction>();

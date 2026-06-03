@@ -475,6 +475,10 @@ def err_ast_action_on_llvm_ir : Error<
   "cannot apply AST actions to LLVM IR file '%0'">,
   DefaultFatal;
 
+def err_ast_action_on_cir : Error<
+  "cannot apply AST actions to CIR file '%0'">,
+  DefaultFatal;
+
 def err_invalid_llvm_ir : Error<"invalid LLVM IR input: %0">;
 
 def err_os_unsupport_riscv_fmv : Error<

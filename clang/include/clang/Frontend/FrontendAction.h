@@ -208,6 +208,9 @@ public:
   /// Does this action support use with IR files?
   virtual bool hasIRSupport() const { return false; }
 
+  /// Does this action support use with CIR files?
+  virtual bool hasCIRSupport() const { return false; }
+
   /// Does this action support use with code completion?
   virtual bool hasCodeCompletionSupport() const { return false; }
 
@@ -338,6 +341,7 @@ public:
   bool hasPCHSupport() const override;
   bool hasASTFileSupport() const override;
   bool hasIRSupport() const override;
+  bool hasCIRSupport() const override;
   bool hasCodeCompletionSupport() const override;
 };
 

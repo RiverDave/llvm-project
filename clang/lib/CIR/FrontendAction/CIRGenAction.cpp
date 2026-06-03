@@ -11,8 +11,20 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "clang/Basic/DiagnosticCodeGen.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
+#include "mlir/IR/BuiltinDialect.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Verifier.h"
+#include "mlir/Parser/Parser.h"
+#include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/CIR/CIRGenerator.h"
 #include "clang/CIR/CIRToCIRPasses.h"
+#include "clang/CIR/Dialect/IR/CIRDialect.h"
+#include "clang/CIR/Dialect/OpenMP/RegisterOpenMPExtensions.h"
 #include "clang/CIR/LowerToLLVM.h"
 #include "clang/CodeGen/BackendUtil.h"
 #include "clang/CodeGen/ModuleLinker.h"
@@ -27,6 +39,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/Internalize.h"
 
@@ -63,6 +76,86 @@ lowerFromCIRToLLVMIR(mlir::ModuleOp MLIRModule, llvm::LLVMContext &LLVMCtx,
                      llvm::vfs::FileSystem *fs = nullptr) {
   return direct::lowerDirectlyFromCIRToLLVMIR(MLIRModule, LLVMCtx, EnableOpenMP,
                                               mlirSaveTempsOutFile, fs);
+}
+
+static void registerDialects(mlir::DialectRegistry &registry) {
+  registry.insert<mlir::BuiltinDialect, cir::CIRDialect,
+                  mlir::memref::MemRefDialect, mlir::LLVM::LLVMDialect,
+                  mlir::DLTIDialect, mlir::omp::OpenMPDialect>();
+  cir::omp::registerOpenMPExtensions(registry);
+}
+
+static void prepareCIRInputContext(mlir::MLIRContext &context) {
+  mlir::DialectRegistry registry;
+  registerDialects(registry);
+  context.appendDialectRegistry(registry);
+  context.loadDialect<cir::CIRDialect, mlir::memref::MemRefDialect,
+                      mlir::LLVM::LLVMDialect, mlir::DLTIDialect,
+                      mlir::omp::OpenMPDialect>();
+}
+
+static void reportError(CompilerInstance &CI, llvm::Twine message) {
+  unsigned DiagID =
+      CI.getDiagnostics().getCustomDiagID(DiagnosticsEngine::Error, "%0");
+  CI.getDiagnostics().Report(DiagID) << message.str();
+}
+
+static mlir::OwningOpRef<mlir::ModuleOp>
+parseCIRInput(CompilerInstance &CI, mlir::MLIRContext &context,
+              llvm::MemoryBufferRef input) {
+  auto sourceMgr = std::make_shared<llvm::SourceMgr>();
+  sourceMgr->AddNewSourceBuffer(
+      llvm::MemoryBuffer::getMemBufferCopy(input.getBuffer(),
+                                           input.getBufferIdentifier()),
+      llvm::SMLoc());
+
+  mlir::SourceMgrDiagnosticHandler sourceMgrHandler(*sourceMgr, &context);
+  mlir::ParserConfig parserConfig(&context, /*verifyAfterParse=*/false);
+  auto module = mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, parserConfig);
+  if (!module) {
+    reportError(CI, "failed to parse CIR input");
+    return {};
+  }
+  if (mlir::failed(mlir::verify(*module))) {
+    reportError(CI, "failed to verify CIR input");
+    return {};
+  }
+  return module;
+}
+
+static bool linkInModules(CompilerInstance &CI, CodeGenOptions &CGO,
+                          llvm::Module &M,
+                          SmallVectorImpl<::clang::LinkModule> &LinkModules) {
+  for (auto &LM : LinkModules) {
+    assert(LM.Module && "LinkModule does not actually have a module");
+
+    if (LM.PropagateAttrs)
+      for (llvm::Function &F : *LM.Module) {
+        if (F.isIntrinsic())
+          continue;
+        clang::CodeGen::mergeDefaultFunctionDefinitionAttributes(
+            F, CGO, CI.getLangOpts(), CI.getTargetOpts(), LM.Internalize);
+      }
+
+    bool Err;
+    if (LM.Internalize) {
+      Err = llvm::Linker::linkModules(
+          M, std::move(LM.Module), LM.LinkFlags,
+          [](llvm::Module &M, const llvm::StringSet<> &GVS) {
+            llvm::internalizeModule(M, [&GVS](const llvm::GlobalValue &GV) {
+              return !GV.hasName() || (GVS.count(GV.getName()) == 0);
+            });
+          });
+    } else {
+      Err = llvm::Linker::linkModules(M, std::move(LM.Module), LM.LinkFlags);
+    }
+
+    if (Err)
+      return true;
+  }
+
+  LinkModules.clear();
+  return false;
 }
 
 class CIRGenConsumer : public clang::ASTConsumer {
@@ -198,7 +291,7 @@ public:
           MlirModule, LLVMCtx, C.getLangOpts().OpenMP, mlirSaveTempsOutFile,
           &CI.getVirtualFileSystem());
 
-      if (linkInModules(*LLVMModule))
+      if (linkInModules(CI, CGO, *LLVMModule, LinkModules))
         return;
 
       BackendAction BEAction = getBackendActionFromOutputType(Action);
@@ -208,41 +301,6 @@ public:
       break;
     }
     }
-  }
-
-  // TODO: share with BackendConsumer::LinkInModules once OG's CurLinkModule
-  // diagnostic-handler indirection is abstracted behind a callback for CIR.
-  bool linkInModules(llvm::Module &M) {
-    for (auto &LM : LinkModules) {
-      assert(LM.Module && "LinkModule does not actually have a module");
-
-      if (LM.PropagateAttrs)
-        for (llvm::Function &F : *LM.Module) {
-          if (F.isIntrinsic())
-            continue;
-          clang::CodeGen::mergeDefaultFunctionDefinitionAttributes(
-              F, CGO, CI.getLangOpts(), CI.getTargetOpts(), LM.Internalize);
-        }
-
-      bool Err;
-      if (LM.Internalize) {
-        Err = llvm::Linker::linkModules(
-            M, std::move(LM.Module), LM.LinkFlags,
-            [](llvm::Module &M, const llvm::StringSet<> &GVS) {
-              llvm::internalizeModule(M, [&GVS](const llvm::GlobalValue &GV) {
-                return !GV.hasName() || (GVS.count(GV.getName()) == 0);
-              });
-            });
-      } else {
-        Err = llvm::Linker::linkModules(M, std::move(LM.Module), LM.LinkFlags);
-      }
-
-      if (Err)
-        return true;
-    }
-
-    LinkModules.clear();
-    return false;
   }
 
   void HandleTagDeclDefinition(TagDecl *D) override {
@@ -294,6 +352,62 @@ getOutputStream(CompilerInstance &CI, StringRef InFile,
     return CI.createDefaultOutputFile(true, InFile, "o");
   }
   llvm_unreachable("Invalid CIRGenAction::OutputType");
+}
+
+bool CIRGenAction::hasCIRSupport() const { return true; }
+
+void CIRGenAction::ExecuteAction() {
+  if (getCurrentFileKind().getLanguage() != Language::CIR) {
+    ASTFrontendAction::ExecuteAction();
+    return;
+  }
+
+  CompilerInstance &CI = getCompilerInstance();
+  std::unique_ptr<llvm::raw_pwrite_stream> OS = CI.takeOutputStream();
+  if (!OS)
+    OS = getOutputStream(CI, getCurrentFileOrBufferName(), Action);
+  if (!OS)
+    return;
+
+  SourceManager &SM = CI.getSourceManager();
+  std::optional<llvm::MemoryBufferRef> MainFile =
+      SM.getBufferOrNone(SM.getMainFileID());
+  if (!MainFile)
+    return;
+
+  prepareCIRInputContext(*MLIRCtx);
+  MLIRMod = parseCIRInput(CI, *MLIRCtx, *MainFile);
+  if (!MLIRMod)
+    return;
+
+  if (Action == OutputType::EmitCIR) {
+    mlir::OpPrintingFlags Flags;
+    Flags.enableDebugInfo(/*enable=*/true, /*prettyForm=*/false);
+    MLIRMod->print(*OS, Flags);
+    return;
+  }
+
+  std::string mlirSaveTempsOutFile;
+  if (!CI.getCodeGenOpts().SaveTempsFilePrefix.empty()) {
+    SmallString<128> stem(CI.getCodeGenOpts().SaveTempsFilePrefix);
+    llvm::sys::path::replace_extension(stem, "mlir");
+    mlirSaveTempsOutFile = std::string(stem);
+  }
+
+  std::unique_ptr<llvm::Module> LLVMModule =
+      lowerFromCIRToLLVMIR(*MLIRMod, *Ctx, mlirSaveTempsOutFile,
+                           &CI.getVirtualFileSystem());
+  if (!LLVMModule)
+    return;
+
+  if (linkInModules(CI, CI.getCodeGenOpts(), *LLVMModule, LinkModules))
+    return;
+
+  BackendAction BEAction = getBackendActionFromOutputType(Action);
+  emitBackendOutput(CI, CI.getCodeGenOpts(),
+                    CI.getTarget().getDataLayoutString(), LLVMModule.get(),
+                    BEAction, CI.getFileManager().getVirtualFileSystemPtr(),
+                    std::move(OS));
 }
 
 std::unique_ptr<ASTConsumer>
