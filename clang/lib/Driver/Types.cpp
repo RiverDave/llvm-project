@@ -170,6 +170,7 @@ bool types::isAcceptedByClang(ID Id) {
   case TY_PP_CXXStdModule:
   case TY_AST: case TY_ModuleFile: case TY_PCH:
   case TY_LLVM_IR: case TY_LLVM_BC:
+  case TY_CIR:
   case TY_API_INFO:
     return true;
   }
