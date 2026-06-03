@@ -9443,6 +9443,100 @@ void OffloadBundler::ConstructJobMultipleOutputs(
       CmdArgs, ArrayRef<InputInfo>(), Outputs));
 }
 
+static void appendCIROffloadTarget(SmallString<128> &Targets,
+                                   Action::OffloadKind Kind,
+                                   const ToolChain *TC, StringRef BoundArch) {
+  Targets += Action::GetOffloadKindName(Kind);
+  Targets += '-';
+  Targets += TC->getTriple().normalize(llvm::Triple::CanonicalForm::FOUR_IDENT);
+  if ((Kind == Action::OFK_Cuda || Kind == Action::OFK_HIP ||
+       Kind == Action::OFK_OpenMP) &&
+      !BoundArch.empty()) {
+    Targets += '-';
+    Targets += BoundArch;
+  }
+}
+
+void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
+                                   const InputInfo &Output,
+                                   const InputInfoList &Inputs,
+                                   const llvm::opt::ArgList &TCArgs,
+                                   const char *LinkingOutput) const {
+  auto &MA = cast<CIRMergeJobAction>(JA);
+  auto DepInfo = MA.getDependentActionsInfo();
+  assert(Inputs.size() == DepInfo.size() &&
+         "Expected one target for each CIR merge input");
+
+  ArgStringList CmdArgs;
+  CmdArgs.push_back("--combine");
+
+  SmallString<128> Targets;
+  Targets += "--targets=";
+  for (unsigned I = 0; I < DepInfo.size(); ++I) {
+    if (I)
+      Targets += ',';
+    appendCIROffloadTarget(Targets, DepInfo[I].DependentOffloadKind,
+                           DepInfo[I].DependentToolChain,
+                           DepInfo[I].DependentBoundArch);
+  }
+  CmdArgs.push_back(TCArgs.MakeArgString(Targets));
+
+  CmdArgs.push_back(
+      TCArgs.MakeArgString(Twine("--output=") + Output.getFilename()));
+
+  for (unsigned I = 0; I < Inputs.size(); ++I) {
+    SmallString<128> Input;
+    Input += "--input=";
+    Input += DepInfo[I].DependentToolChain->getInputFilename(Inputs[I]);
+    CmdArgs.push_back(TCArgs.MakeArgString(Input));
+  }
+
+  C.addCommand(std::make_unique<Command>(
+      JA, *this, ResponseFileSupport::None(),
+      TCArgs.MakeArgString(getToolChain().GetProgramPath(getShortName())),
+      CmdArgs, ArrayRef<InputInfo>(), Output));
+}
+
+void CIROffloadMerge::ConstructJobMultipleOutputs(
+    Compilation &C, const JobAction &JA, const InputInfoList &Outputs,
+    const InputInfoList &Inputs, const llvm::opt::ArgList &TCArgs,
+    const char *LinkingOutput) const {
+  auto &SA = cast<CIRSplitJobAction>(JA);
+  auto DepInfo = SA.getDependentActionsInfo();
+  assert(Inputs.size() == 1 && "Expected one CIR split input");
+  assert(Outputs.size() == DepInfo.size() &&
+         "Expected one CIR split output for each target");
+
+  ArgStringList CmdArgs;
+  CmdArgs.push_back("--split");
+
+  SmallString<128> Targets;
+  Targets += "--targets=";
+  for (unsigned I = 0; I < DepInfo.size(); ++I) {
+    if (I)
+      Targets += ',';
+    appendCIROffloadTarget(Targets, DepInfo[I].DependentOffloadKind,
+                           DepInfo[I].DependentToolChain,
+                           DepInfo[I].DependentBoundArch);
+  }
+  CmdArgs.push_back(TCArgs.MakeArgString(Targets));
+
+  CmdArgs.push_back(
+      TCArgs.MakeArgString(Twine("--input=") + Inputs.front().getFilename()));
+
+  for (unsigned I = 0; I < Outputs.size(); ++I) {
+    SmallString<128> Output;
+    Output += "--output=";
+    Output += DepInfo[I].DependentToolChain->getInputFilename(Outputs[I]);
+    CmdArgs.push_back(TCArgs.MakeArgString(Output));
+  }
+
+  C.addCommand(std::make_unique<Command>(
+      JA, *this, ResponseFileSupport::None(),
+      TCArgs.MakeArgString(getToolChain().GetProgramPath(getShortName())),
+      CmdArgs, ArrayRef<InputInfo>(), Outputs));
+}
+
 void OffloadPackager::ConstructJob(Compilation &C, const JobAction &JA,
                                    const InputInfo &Output,
                                    const InputInfoList &Inputs,

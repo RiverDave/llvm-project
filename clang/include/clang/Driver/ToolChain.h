@@ -172,6 +172,7 @@ private:
   mutable std::unique_ptr<Tool> StaticLibTool;
   mutable std::unique_ptr<Tool> IfsMerge;
   mutable std::unique_ptr<Tool> OffloadBundler;
+  mutable std::unique_ptr<Tool> CIROffloadMerge;
   mutable std::unique_ptr<Tool> OffloadPackager;
   mutable std::unique_ptr<Tool> LinkerWrapper;
 
@@ -183,6 +184,7 @@ private:
   Tool *getIfsMerge() const;
   Tool *getClangAs() const;
   Tool *getOffloadBundler() const;
+  Tool *getCIROffloadMerge() const;
   Tool *getOffloadPackager() const;
   Tool *getLinkerWrapper() const;
 

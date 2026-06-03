@@ -71,6 +71,8 @@ public:
     VerifyPCHJobClass,
     OffloadBundlingJobClass,
     OffloadUnbundlingJobClass,
+    CIRMergeJobClass,
+    CIRSplitJobClass,
     OffloadPackagerJobClass,
     LinkerWrapperJobClass,
     StaticLibJobClass,
@@ -633,6 +635,80 @@ public:
 
   static bool classof(const Action *A) {
     return A->getKind() == OffloadUnbundlingJobClass;
+  }
+};
+
+class CIRMergeJobAction final : public JobAction {
+  void anchor() override;
+
+public:
+  struct DependentActionInfo final {
+    const ToolChain *DependentToolChain = nullptr;
+    StringRef DependentBoundArch;
+    const OffloadKind DependentOffloadKind = OFK_None;
+
+    DependentActionInfo(const ToolChain *DependentToolChain,
+                        StringRef DependentBoundArch,
+                        const OffloadKind DependentOffloadKind)
+        : DependentToolChain(DependentToolChain),
+          DependentBoundArch(DependentBoundArch),
+          DependentOffloadKind(DependentOffloadKind) {}
+  };
+
+private:
+  SmallVector<DependentActionInfo, 6> DependentActionInfoArray;
+
+public:
+  CIRMergeJobAction(ActionList &Inputs);
+
+  void registerDependentActionInfo(const ToolChain *TC, StringRef BoundArch,
+                                   OffloadKind Kind) {
+    DependentActionInfoArray.push_back({TC, BoundArch, Kind});
+  }
+
+  ArrayRef<DependentActionInfo> getDependentActionsInfo() const {
+    return DependentActionInfoArray;
+  }
+
+  static bool classof(const Action *A) {
+    return A->getKind() == CIRMergeJobClass;
+  }
+};
+
+class CIRSplitJobAction final : public JobAction {
+  void anchor() override;
+
+public:
+  struct DependentActionInfo final {
+    const ToolChain *DependentToolChain = nullptr;
+    StringRef DependentBoundArch;
+    const OffloadKind DependentOffloadKind = OFK_None;
+
+    DependentActionInfo(const ToolChain *DependentToolChain,
+                        StringRef DependentBoundArch,
+                        const OffloadKind DependentOffloadKind)
+        : DependentToolChain(DependentToolChain),
+          DependentBoundArch(DependentBoundArch),
+          DependentOffloadKind(DependentOffloadKind) {}
+  };
+
+private:
+  SmallVector<DependentActionInfo, 6> DependentActionInfoArray;
+
+public:
+  CIRSplitJobAction(Action *Input);
+
+  void registerDependentActionInfo(const ToolChain *TC, StringRef BoundArch,
+                                   OffloadKind Kind) {
+    DependentActionInfoArray.push_back({TC, BoundArch, Kind});
+  }
+
+  ArrayRef<DependentActionInfo> getDependentActionsInfo() const {
+    return DependentActionInfoArray;
+  }
+
+  static bool classof(const Action *A) {
+    return A->getKind() == CIRSplitJobClass;
   }
 };
 
