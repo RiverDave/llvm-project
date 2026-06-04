@@ -9457,6 +9457,21 @@ static void appendCIROffloadTarget(SmallString<128> &Targets,
   }
 }
 
+static void addCIROffloadTargetsArg(
+    const llvm::opt::ArgList &TCArgs, ArgStringList &CmdArgs,
+    ArrayRef<JobActionWithDependentInfo::DependentActionInfo> DepInfo) {
+  SmallString<128> Targets;
+  Targets += "--targets=";
+  for (unsigned I = 0; I < DepInfo.size(); ++I) {
+    if (I)
+      Targets += ',';
+    appendCIROffloadTarget(Targets, DepInfo[I].DependentOffloadKind,
+                           DepInfo[I].DependentToolChain,
+                           DepInfo[I].DependentBoundArch);
+  }
+  CmdArgs.push_back(TCArgs.MakeArgString(Targets));
+}
+
 void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
                                    const InputInfo &Output,
                                    const InputInfoList &Inputs,
@@ -9469,17 +9484,7 @@ void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
 
   ArgStringList CmdArgs;
   CmdArgs.push_back("--combine");
-
-  SmallString<128> Targets;
-  Targets += "--targets=";
-  for (unsigned I = 0; I < DepInfo.size(); ++I) {
-    if (I)
-      Targets += ',';
-    appendCIROffloadTarget(Targets, DepInfo[I].DependentOffloadKind,
-                           DepInfo[I].DependentToolChain,
-                           DepInfo[I].DependentBoundArch);
-  }
-  CmdArgs.push_back(TCArgs.MakeArgString(Targets));
+  addCIROffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
 
   CmdArgs.push_back(
       TCArgs.MakeArgString(Twine("--output=") + Output.getFilename()));
@@ -9509,17 +9514,7 @@ void CIROffloadMerge::ConstructJobMultipleOutputs(
 
   ArgStringList CmdArgs;
   CmdArgs.push_back("--split");
-
-  SmallString<128> Targets;
-  Targets += "--targets=";
-  for (unsigned I = 0; I < DepInfo.size(); ++I) {
-    if (I)
-      Targets += ',';
-    appendCIROffloadTarget(Targets, DepInfo[I].DependentOffloadKind,
-                           DepInfo[I].DependentToolChain,
-                           DepInfo[I].DependentBoundArch);
-  }
-  CmdArgs.push_back(TCArgs.MakeArgString(Targets));
+  addCIROffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
 
   CmdArgs.push_back(
       TCArgs.MakeArgString(Twine("--input=") + Inputs.front().getFilename()));

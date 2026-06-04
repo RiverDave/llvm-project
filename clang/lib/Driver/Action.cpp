@@ -444,17 +444,21 @@ OffloadBundlingJobAction::OffloadBundlingJobAction(ActionList &Inputs)
 void OffloadUnbundlingJobAction::anchor() {}
 
 OffloadUnbundlingJobAction::OffloadUnbundlingJobAction(Action *Input)
-    : JobAction(OffloadUnbundlingJobClass, Input, Input->getType()) {}
+    : JobActionWithDependentInfo(OffloadUnbundlingJobClass, Input,
+                                 Input->getType()) {}
 
 void CIRMergeJobAction::anchor() {}
 
 CIRMergeJobAction::CIRMergeJobAction(ActionList &Inputs)
-    : JobAction(CIRMergeJobClass, Inputs, types::TY_CIR) {}
+    : JobActionWithDependentInfo(CIRMergeJobClass, Inputs, types::TY_CIR) {}
 
 void CIRSplitJobAction::anchor() {}
 
 CIRSplitJobAction::CIRSplitJobAction(Action *Input)
-    : JobAction(CIRSplitJobClass, Input, types::TY_CIR) {}
+    : JobActionWithDependentInfo(CIRSplitJobClass, Input, Input->getType()) {
+  assert(Input->getType() == types::TY_CIR &&
+         "CIR split expects a CIR container input");
+}
 
 void OffloadPackagerJobAction::anchor() {}
 
