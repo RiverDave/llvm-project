@@ -9250,6 +9250,50 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
 }
 
 // Begin OffloadBundler
+
+// Build the comma-separated "<flag>kind-triple[-arch],..." argument shared by
+// the offload (un)bundler and the CIR offload merge/split tools. The leading
+// flag differs per tool (e.g. "-targets=" vs "--targets=").
+static void addOffloadTargetsArg(
+    const llvm::opt::ArgList &TCArgs, ArgStringList &CmdArgs, StringRef Flag,
+    ArrayRef<JobActionWithDependentInfo::DependentActionInfo> DepInfo) {
+  SmallString<128> Triples;
+  Triples += Flag;
+  for (unsigned I = 0; I < DepInfo.size(); ++I) {
+    if (I)
+      Triples += ',';
+
+    const auto &Dep = DepInfo[I];
+    Triples += Action::GetOffloadKindName(Dep.DependentOffloadKind);
+    Triples += '-';
+    Triples += Dep.DependentToolChain->getTriple().normalize(
+        llvm::Triple::CanonicalForm::FOUR_IDENT);
+    if ((Dep.DependentOffloadKind == Action::OFK_HIP ||
+         Dep.DependentOffloadKind == Action::OFK_Cuda) &&
+        !Dep.DependentBoundArch.empty()) {
+      Triples += '-';
+      Triples += Dep.DependentBoundArch;
+    }
+    // TODO: Replace parsing of -march flag. Can be done by storing GPUArch
+    //       with each toolchain.
+    StringRef GPUArchName;
+    if (Dep.DependentOffloadKind == Action::OFK_OpenMP) {
+      // Extract GPUArch from -march argument in TC argument list.
+      for (unsigned ArgIndex = 0; ArgIndex < TCArgs.size(); ArgIndex++) {
+        StringRef ArchStr = StringRef(TCArgs.getArgString(ArgIndex));
+        auto Arch = ArchStr.starts_with_insensitive("-march=");
+        if (Arch) {
+          GPUArchName = ArchStr.substr(7);
+          Triples += "-";
+          break;
+        }
+      }
+      Triples += GPUArchName.str();
+    }
+  }
+  CmdArgs.push_back(TCArgs.MakeArgString(Triples));
+}
+
 void OffloadBundler::ConstructJob(Compilation &C, const JobAction &JA,
                                   const InputInfo &Output,
                                   const InputInfoList &Inputs,
@@ -9382,43 +9426,8 @@ void OffloadBundler::ConstructJobMultipleOutputs(
       Twine("-type=") + types::getTypeTempSuffix(Input.getType())));
 
   // Get the targets.
-  SmallString<128> Triples;
-  Triples += "-targets=";
   auto DepInfo = UA.getDependentActionsInfo();
-  for (unsigned I = 0; I < DepInfo.size(); ++I) {
-    if (I)
-      Triples += ',';
-
-    auto &Dep = DepInfo[I];
-    Triples += Action::GetOffloadKindName(Dep.DependentOffloadKind);
-    Triples += '-';
-    Triples += Dep.DependentToolChain->getTriple().normalize(
-        llvm::Triple::CanonicalForm::FOUR_IDENT);
-    if ((Dep.DependentOffloadKind == Action::OFK_HIP ||
-         Dep.DependentOffloadKind == Action::OFK_Cuda) &&
-        !Dep.DependentBoundArch.empty()) {
-      Triples += '-';
-      Triples += Dep.DependentBoundArch;
-    }
-    // TODO: Replace parsing of -march flag. Can be done by storing GPUArch
-    //       with each toolchain.
-    StringRef GPUArchName;
-    if (Dep.DependentOffloadKind == Action::OFK_OpenMP) {
-      // Extract GPUArch from -march argument in TC argument list.
-      for (unsigned ArgIndex = 0; ArgIndex < TCArgs.size(); ArgIndex++) {
-        StringRef ArchStr = StringRef(TCArgs.getArgString(ArgIndex));
-        auto Arch = ArchStr.starts_with_insensitive("-march=");
-        if (Arch) {
-          GPUArchName = ArchStr.substr(7);
-          Triples += "-";
-          break;
-        }
-      }
-      Triples += GPUArchName.str();
-    }
-  }
-
-  CmdArgs.push_back(TCArgs.MakeArgString(Triples));
+  addOffloadTargetsArg(TCArgs, CmdArgs, "-targets=", DepInfo);
 
   // Get bundled file command.
   CmdArgs.push_back(
@@ -9443,30 +9452,6 @@ void OffloadBundler::ConstructJobMultipleOutputs(
       CmdArgs, ArrayRef<InputInfo>(), Outputs));
 }
 
-static void addCIROffloadTargetsArg(
-    const llvm::opt::ArgList &TCArgs, ArgStringList &CmdArgs,
-    ArrayRef<JobActionWithDependentInfo::DependentActionInfo> DepInfo) {
-  SmallString<128> Targets;
-  Targets += "--targets=";
-  for (unsigned I = 0; I < DepInfo.size(); ++I) {
-    const auto &Dep = DepInfo[I];
-    if (I)
-      Targets += ',';
-    Targets += Action::GetOffloadKindName(Dep.DependentOffloadKind);
-    Targets += '-';
-    Targets += Dep.DependentToolChain->getTriple().normalize(
-        llvm::Triple::CanonicalForm::FOUR_IDENT);
-    if ((Dep.DependentOffloadKind == Action::OFK_Cuda ||
-         Dep.DependentOffloadKind == Action::OFK_HIP ||
-         Dep.DependentOffloadKind == Action::OFK_OpenMP) &&
-        !Dep.DependentBoundArch.empty()) {
-      Targets += '-';
-      Targets += Dep.DependentBoundArch;
-    }
-  }
-  CmdArgs.push_back(TCArgs.MakeArgString(Targets));
-}
-
 void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
                                    const InputInfo &Output,
                                    const InputInfoList &Inputs,
@@ -9479,7 +9464,7 @@ void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
 
   ArgStringList CmdArgs;
   CmdArgs.push_back("--combine");
-  addCIROffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
+  addOffloadTargetsArg(TCArgs, CmdArgs, "--targets=", DepInfo);
 
   CmdArgs.push_back(
       TCArgs.MakeArgString(Twine("--output=") + Output.getFilename()));
@@ -9509,7 +9494,7 @@ void CIROffloadMerge::ConstructJobMultipleOutputs(
 
   ArgStringList CmdArgs;
   CmdArgs.push_back("--split");
-  addCIROffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
+  addOffloadTargetsArg(TCArgs, CmdArgs, "--targets=", DepInfo);
 
   CmdArgs.push_back(
       TCArgs.MakeArgString(Twine("--input=") + Inputs.front().getFilename()));
