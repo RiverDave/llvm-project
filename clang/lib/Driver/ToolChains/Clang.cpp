@@ -9443,31 +9443,26 @@ void OffloadBundler::ConstructJobMultipleOutputs(
       CmdArgs, ArrayRef<InputInfo>(), Outputs));
 }
 
-static void appendCIROffloadTarget(SmallString<128> &Targets,
-                                   Action::OffloadKind Kind,
-                                   const ToolChain *TC, StringRef BoundArch) {
-  Targets += Action::GetOffloadKindName(Kind);
-  Targets += '-';
-  Targets += TC->getTriple().normalize(llvm::Triple::CanonicalForm::FOUR_IDENT);
-  if ((Kind == Action::OFK_Cuda || Kind == Action::OFK_HIP ||
-       Kind == Action::OFK_OpenMP) &&
-      !BoundArch.empty()) {
-    Targets += '-';
-    Targets += BoundArch;
-  }
-}
-
 static void addCIROffloadTargetsArg(
     const llvm::opt::ArgList &TCArgs, ArgStringList &CmdArgs,
     ArrayRef<JobActionWithDependentInfo::DependentActionInfo> DepInfo) {
   SmallString<128> Targets;
   Targets += "--targets=";
   for (unsigned I = 0; I < DepInfo.size(); ++I) {
+    const auto &Dep = DepInfo[I];
     if (I)
       Targets += ',';
-    appendCIROffloadTarget(Targets, DepInfo[I].DependentOffloadKind,
-                           DepInfo[I].DependentToolChain,
-                           DepInfo[I].DependentBoundArch);
+    Targets += Action::GetOffloadKindName(Dep.DependentOffloadKind);
+    Targets += '-';
+    Targets += Dep.DependentToolChain->getTriple().normalize(
+        llvm::Triple::CanonicalForm::FOUR_IDENT);
+    if ((Dep.DependentOffloadKind == Action::OFK_Cuda ||
+         Dep.DependentOffloadKind == Action::OFK_HIP ||
+         Dep.DependentOffloadKind == Action::OFK_OpenMP) &&
+        !Dep.DependentBoundArch.empty()) {
+      Targets += '-';
+      Targets += Dep.DependentBoundArch;
+    }
   }
   CmdArgs.push_back(TCArgs.MakeArgString(Targets));
 }
