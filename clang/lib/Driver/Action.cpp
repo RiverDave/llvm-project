@@ -40,6 +40,12 @@ const char *Action::getClassName(ActionClass AC) {
   case VerifyPCHJobClass: return "verify-pch";
   case OffloadBundlingJobClass:
     return "clang-offload-bundler";
+  case OffloadUnbundlingJobClass:
+    return "clang-offload-unbundler";
+  case CIRMergeJobClass:
+    return "cir-offload-merge";
+  case CIRSplitJobClass:
+    return "cir-offload-split";
   case OffloadPackagerJobClass:
     return "llvm-offload-binary";
   case LinkerWrapperJobClass:
@@ -429,6 +435,25 @@ void OffloadBundlingJobAction::anchor() {}
 
 OffloadBundlingJobAction::OffloadBundlingJobAction(ActionList &Inputs)
     : JobAction(OffloadBundlingJobClass, Inputs, Inputs.back()->getType()) {}
+
+void OffloadUnbundlingJobAction::anchor() {}
+
+OffloadUnbundlingJobAction::OffloadUnbundlingJobAction(Action *Input)
+    : JobActionWithDependentInfo(OffloadUnbundlingJobClass, Input,
+                                 Input->getType()) {}
+
+void CIRMergeJobAction::anchor() {}
+
+CIRMergeJobAction::CIRMergeJobAction(ActionList &Inputs)
+    : JobActionWithDependentInfo(CIRMergeJobClass, Inputs, types::TY_CIR) {}
+
+void CIRSplitJobAction::anchor() {}
+
+CIRSplitJobAction::CIRSplitJobAction(Action *Input)
+    : JobActionWithDependentInfo(CIRSplitJobClass, Input, Input->getType()) {
+  assert(Input->getType() == types::TY_CIR &&
+         "CIR split expects a CIR container input");
+}
 
 void OffloadPackagerJobAction::anchor() {}
 

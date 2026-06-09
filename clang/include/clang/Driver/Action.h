@@ -71,6 +71,9 @@ public:
     VerifyDebugInfoJobClass,
     VerifyPCHJobClass,
     OffloadBundlingJobClass,
+    OffloadUnbundlingJobClass,
+    CIRMergeJobClass,
+    CIRSplitJobClass,
     OffloadPackagerJobClass,
     LinkerWrapperJobClass,
     StaticLibJobClass,
@@ -583,6 +586,87 @@ public:
 
   static bool classof(const Action *A) {
     return A->getKind() == OffloadBundlingJobClass;
+  }
+};
+
+/// Base for job actions that fan out to several dependent actions, each with
+/// its own tool chain, bound architecture, and offload kind (e.g. offload
+/// unbundling, CIR merge/split).
+class JobActionWithDependentInfo : public JobAction {
+public:
+  /// Type that provides information about the actions that depend on this one.
+  struct DependentActionInfo final {
+    /// The tool chain of the dependent action.
+    const ToolChain *DependentToolChain = nullptr;
+
+    /// The bound architecture of the dependent action.
+    BoundArch DependentBoundArch;
+
+    /// The offload kind of the dependent action.
+    const OffloadKind DependentOffloadKind = OFK_None;
+
+    DependentActionInfo(const ToolChain *DependentToolChain,
+                        BoundArch DependentBoundArch,
+                        const OffloadKind DependentOffloadKind)
+        : DependentToolChain(DependentToolChain),
+          DependentBoundArch(DependentBoundArch),
+          DependentOffloadKind(DependentOffloadKind) {}
+  };
+
+  /// Register information about a dependent action.
+  void registerDependentActionInfo(const ToolChain *TC, BoundArch BA,
+                                   OffloadKind Kind) {
+    DependentActionInfoArray.push_back({TC, BA, Kind});
+  }
+
+  /// Return the information about all depending actions.
+  ArrayRef<DependentActionInfo> getDependentActionsInfo() const {
+    return DependentActionInfoArray;
+  }
+
+protected:
+  JobActionWithDependentInfo(ActionClass Kind, Action *Input, types::ID Type)
+      : JobAction(Kind, Input, Type) {}
+  JobActionWithDependentInfo(ActionClass Kind, ActionList &Inputs,
+                             types::ID Type)
+      : JobAction(Kind, Inputs, Type) {}
+
+private:
+  /// Container that keeps information about each dependence of this action.
+  SmallVector<DependentActionInfo, 6> DependentActionInfoArray;
+};
+
+class OffloadUnbundlingJobAction final : public JobActionWithDependentInfo {
+  void anchor() override;
+
+public:
+  // Offloading unbundling doesn't change the type of output.
+  OffloadUnbundlingJobAction(Action *Input);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == OffloadUnbundlingJobClass;
+  }
+};
+
+class CIRMergeJobAction final : public JobActionWithDependentInfo {
+  void anchor() override;
+
+public:
+  CIRMergeJobAction(ActionList &Inputs);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == CIRMergeJobClass;
+  }
+};
+
+class CIRSplitJobAction final : public JobActionWithDependentInfo {
+  void anchor() override;
+
+public:
+  CIRSplitJobAction(Action *Input);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == CIRSplitJobClass;
   }
 };
 
