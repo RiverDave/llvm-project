@@ -9251,14 +9251,13 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
 
 // Begin OffloadBundler
 
-// Build the comma-separated "<flag>kind-triple[-arch],..." argument shared by
-// the offload (un)bundler and the CIR offload merge/split tools. The leading
-// flag differs per tool (e.g. "-targets=" vs "--targets=").
+// Build the comma-separated "-targets=kind-triple[-arch],..." argument shared by
+// the offload (un)bundler and the CIR offload merge/split tools.
 static void addOffloadTargetsArg(
-    const llvm::opt::ArgList &TCArgs, ArgStringList &CmdArgs, StringRef Flag,
+    const llvm::opt::ArgList &TCArgs, ArgStringList &CmdArgs,
     ArrayRef<JobActionWithDependentInfo::DependentActionInfo> DepInfo) {
   SmallString<128> Triples;
-  Triples += Flag;
+  Triples += "-targets=";
   for (unsigned I = 0; I < DepInfo.size(); ++I) {
     if (I)
       Triples += ',';
@@ -9427,7 +9426,7 @@ void OffloadBundler::ConstructJobMultipleOutputs(
 
   // Get the targets.
   auto DepInfo = UA.getDependentActionsInfo();
-  addOffloadTargetsArg(TCArgs, CmdArgs, "-targets=", DepInfo);
+  addOffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
 
   // Get bundled file command.
   CmdArgs.push_back(
@@ -9463,15 +9462,15 @@ void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
          "Expected one target for each CIR merge input");
 
   ArgStringList CmdArgs;
-  CmdArgs.push_back("--combine");
-  addOffloadTargetsArg(TCArgs, CmdArgs, "--targets=", DepInfo);
+  CmdArgs.push_back("-combine");
+  addOffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
 
   CmdArgs.push_back(
-      TCArgs.MakeArgString(Twine("--output=") + Output.getFilename()));
+      TCArgs.MakeArgString(Twine("-output=") + Output.getFilename()));
 
   for (unsigned I = 0; I < Inputs.size(); ++I) {
     SmallString<128> Input;
-    Input += "--input=";
+    Input += "-input=";
     Input += DepInfo[I].DependentToolChain->getInputFilename(Inputs[I]);
     CmdArgs.push_back(TCArgs.MakeArgString(Input));
   }
@@ -9493,15 +9492,15 @@ void CIROffloadMerge::ConstructJobMultipleOutputs(
          "Expected one CIR split output for each target");
 
   ArgStringList CmdArgs;
-  CmdArgs.push_back("--split");
-  addOffloadTargetsArg(TCArgs, CmdArgs, "--targets=", DepInfo);
+  CmdArgs.push_back("-split");
+  addOffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
 
   CmdArgs.push_back(
-      TCArgs.MakeArgString(Twine("--input=") + Inputs.front().getFilename()));
+      TCArgs.MakeArgString(Twine("-input=") + Inputs.front().getFilename()));
 
   for (unsigned I = 0; I < Outputs.size(); ++I) {
     SmallString<128> Output;
-    Output += "--output=";
+    Output += "-output=";
     Output += DepInfo[I].DependentToolChain->getInputFilename(Outputs[I]);
     CmdArgs.push_back(TCArgs.MakeArgString(Output));
   }
