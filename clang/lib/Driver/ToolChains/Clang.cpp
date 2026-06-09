@@ -9504,6 +9504,33 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
 }
 
 // Begin OffloadBundler
+
+// Build the comma-separated "-targets=kind-triple[-arch],..." argument shared by
+// the offload (un)bundler and the CIR offload merge/split tools.
+static void addOffloadTargetsArg(
+    const llvm::opt::ArgList &TCArgs, ArgStringList &CmdArgs,
+    ArrayRef<JobActionWithDependentInfo::DependentActionInfo> DepInfo) {
+  SmallString<128> Triples;
+  Triples += "-targets=";
+  for (unsigned I = 0; I < DepInfo.size(); ++I) {
+    if (I)
+      Triples += ',';
+
+    const auto &Dep = DepInfo[I];
+    Triples += Action::GetOffloadKindName(Dep.DependentOffloadKind);
+    Triples += '-';
+    Triples += llvm::Triple(Dep.DependentToolChain->ComputeEffectiveClangTriple(
+                                TCArgs, Dep.DependentBoundArch))
+                   .normalize(llvm::Triple::CanonicalForm::FOUR_IDENT);
+    if ((Dep.DependentOffloadKind == Action::OFK_HIP ||
+         Dep.DependentOffloadKind == Action::OFK_Cuda) &&
+        !Dep.DependentBoundArch.empty()) {
+      Triples += -; Triples += Dep.DependentBoundArch.ArchName;
+    }
+  }
+  CmdArgs.push_back(TCArgs.MakeArgString(Triples));
+}
+
 void OffloadBundler::ConstructJob(Compilation &C, const JobAction &JA,
                                   const InputInfo &Output,
                                   const InputInfoList &Inputs,
@@ -9620,29 +9647,8 @@ void OffloadBundler::ConstructJobMultipleOutputs(
       Twine("-type=") + types::getTypeTempSuffix(Input.getType())));
 
   // Get the targets.
-  SmallString<128> Triples;
-  Triples += "-targets=";
   auto DepInfo = UA.getDependentActionsInfo();
-  for (unsigned I = 0; I < DepInfo.size(); ++I) {
-    if (I)
-      Triples += ',';
-
-    auto &Dep = DepInfo[I];
-    Triples += Action::GetOffloadKindName(Dep.DependentOffloadKind);
-    Triples += '-';
-    Triples += llvm::Triple(Dep.DependentToolChain->ComputeEffectiveClangTriple(
-                                TCArgs, Dep.DependentBoundArch))
-                   .normalize(llvm::Triple::CanonicalForm::FOUR_IDENT);
-
-    if ((Dep.DependentOffloadKind == Action::OFK_HIP ||
-         Dep.DependentOffloadKind == Action::OFK_Cuda) &&
-        !Dep.DependentBoundArch.empty()) {
-      Triples += '-';
-      Triples += Dep.DependentBoundArch.ArchName;
-    }
-  }
-
-  CmdArgs.push_back(TCArgs.MakeArgString(Triples));
+  addOffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
 
   // Get bundled file command.
   CmdArgs.push_back(
@@ -9661,6 +9667,66 @@ void OffloadBundler::ConstructJobMultipleOutputs(
     CmdArgs.push_back("-verbose");
 
   // All the inputs are encoded as commands.
+  C.addCommand(std::make_unique<Command>(
+      JA, *this, ResponseFileSupport::None(),
+      TCArgs.MakeArgString(getToolChain().GetProgramPath(getShortName())),
+      CmdArgs, ArrayRef<InputInfo>(), Outputs));
+}
+
+void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
+                                   const InputInfo &Output,
+                                   const InputInfoList &Inputs,
+                                   const llvm::opt::ArgList &TCArgs,
+                                   const char *LinkingOutput) const {
+  auto &MA = cast<CIRMergeJobAction>(JA);
+  auto DepInfo = MA.getDependentActionsInfo();
+  assert(Inputs.size() == DepInfo.size() &&
+         "Expected one target for each CIR merge input");
+
+  ArgStringList CmdArgs;
+  CmdArgs.push_back("-combine");
+  addOffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
+
+  CmdArgs.push_back(
+      TCArgs.MakeArgString(Twine("-output=") + Output.getFilename()));
+
+  for (unsigned I = 0; I < Inputs.size(); ++I) {
+    SmallString<128> Input;
+    Input += "-input=";
+    Input += DepInfo[I].DependentToolChain->getInputFilename(Inputs[I]);
+    CmdArgs.push_back(TCArgs.MakeArgString(Input));
+  }
+
+  C.addCommand(std::make_unique<Command>(
+      JA, *this, ResponseFileSupport::None(),
+      TCArgs.MakeArgString(getToolChain().GetProgramPath(getShortName())),
+      CmdArgs, ArrayRef<InputInfo>(), Output));
+}
+
+void CIROffloadMerge::ConstructJobMultipleOutputs(
+    Compilation &C, const JobAction &JA, const InputInfoList &Outputs,
+    const InputInfoList &Inputs, const llvm::opt::ArgList &TCArgs,
+    const char *LinkingOutput) const {
+  auto &SA = cast<CIRSplitJobAction>(JA);
+  auto DepInfo = SA.getDependentActionsInfo();
+  assert(Inputs.size() == 1 && "Expected one CIR split input");
+  assert(Outputs.size() == DepInfo.size() &&
+         "Expected one CIR split output for each target");
+
+  ArgStringList CmdArgs;
+  CmdArgs.push_back("-split");
+  addOffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
+
+  CmdArgs.push_back(
+      TCArgs.MakeArgString(Twine("-input=") + Inputs.front().getFilename()));
+
+  for (unsigned I = 0; I < Outputs.size(); ++I) {
+    SmallString<128> Output;
+    Output += "-output=";
+    Output += DepInfo[I].DependentToolChain->getInputFilename(Outputs[I]);
+    CmdArgs.push_back(TCArgs.MakeArgString(Output));
+  }
+
   C.addCommand(std::make_unique<Command>(
       JA, *this, ResponseFileSupport::None(),
       TCArgs.MakeArgString(getToolChain().GetProgramPath(getShortName())),

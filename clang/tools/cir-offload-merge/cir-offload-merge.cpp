@@ -163,13 +163,13 @@ bool isCompatibleTarget(llvm::StringRef bundleID, llvm::StringRef target,
 int validateCombineCommandLine(
     llvm::SmallVectorImpl<InputTarget> &inputTargets) {
   if (Combine == Split)
-    return reportError("expected exactly one of --combine or --split");
+    return reportError("expected exactly one of -combine or -split");
   if (InputFileNames.empty())
-    return reportError("missing required --input");
+    return reportError("missing required -input");
   if (TargetNames.empty())
-    return reportError("missing required --targets");
+    return reportError("missing required -targets");
   if (OutputFileNames.empty())
-    return reportError("missing required --output");
+    return reportError("missing required -output");
   if (OutputFileNames.size() != 1)
     return reportError("combine mode expects exactly one output");
   if (InputFileNames.size() != TargetNames.size())
@@ -209,15 +209,15 @@ int validateCombineCommandLine(
 int validateSplitCommandLine(
     llvm::SmallVectorImpl<TargetOutput> &targetOutputs) {
   if (Combine == Split)
-    return reportError("expected exactly one of --combine or --split");
+    return reportError("expected exactly one of -combine or -split");
   if (InputFileNames.empty())
-    return reportError("missing required --input");
+    return reportError("missing required -input");
   if (InputFileNames.size() != 1)
     return reportError("split mode expects exactly one input");
   if (TargetNames.empty())
-    return reportError("missing required --targets");
+    return reportError("missing required -targets");
   if (OutputFileNames.empty())
-    return reportError("missing required --output");
+    return reportError("missing required -output");
   if (OutputFileNames.size() != TargetNames.size())
     return reportError("number of output files and targets should match in "
                        "split mode");
@@ -367,7 +367,7 @@ int splitInput(llvm::StringRef inputFileName,
       return reportError(llvm::Twine("invalid module bundle ID '") + bundleID +
                          "'");
 
-    // The requested --targets/--output pairs only form the output map. The
+    // The requested -targets/-output pairs only form the output map. The
     // stored bundle ID decides where this nested module is written.
     TargetOutput *match = nullptr;
     for (TargetOutput &targetOutput : targetOutputs) {

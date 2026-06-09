@@ -161,6 +161,24 @@ public:
                                    const char *LinkingOutput) const override;
 };
 
+/// CIR offload merge tool.
+class LLVM_LIBRARY_VISIBILITY CIROffloadMerge final : public Tool {
+public:
+  CIROffloadMerge(const ToolChain &TC)
+      : Tool("CIR offload merge", "cir-offload-merge", TC) {}
+
+  bool hasIntegratedCPP() const override { return false; }
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+  void ConstructJobMultipleOutputs(Compilation &C, const JobAction &JA,
+                                   const InputInfoList &Outputs,
+                                   const InputInfoList &Inputs,
+                                   const llvm::opt::ArgList &TCArgs,
+                                   const char *LinkingOutput) const override;
+};
+
 /// Offload binary tool.
 class LLVM_LIBRARY_VISIBILITY OffloadPackager final : public Tool {
 public:
