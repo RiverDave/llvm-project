@@ -68,6 +68,14 @@ void Action::propagateDeviceOffloadInfo(OffloadKind OKind, const char *OArch,
   // Offload action set its own kinds on their dependences.
   if (Kind == OffloadClass)
     return;
+  if (Kind == CIRSplitJobClass) {
+    assert((OffloadingDeviceKind == OKind || OffloadingDeviceKind == OFK_None) &&
+           "Setting device kind to a different device??");
+    OffloadingDeviceKind = OKind;
+    OffloadingArch = OArch;
+    OffloadingToolChain = OToolChain;
+    return;
+  }
   // Unbundling actions use the host kinds.
   if (Kind == OffloadUnbundlingJobClass)
     return;
@@ -86,6 +94,8 @@ void Action::propagateDeviceOffloadInfo(OffloadKind OKind, const char *OArch,
 void Action::propagateHostOffloadInfo(unsigned OKinds, const char *OArch) {
   // Offload action set its own kinds on their dependences.
   if (Kind == OffloadClass)
+    return;
+  if (Kind == CIRSplitJobClass)
     return;
 
   assert(OffloadingDeviceKind == OFK_None &&
