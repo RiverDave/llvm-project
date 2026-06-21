@@ -1,26 +1,37 @@
 // Driver pipeline for a CUDA compilation with ClangIR offload merge enabled
-// (single device arch).
+// (single device arch), compiled all the way to an object.
 
 // REQUIRES: cir-support
 
 // RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
 // RUN:   --cuda-gpu-arch=sm_80 -nocudainc -nocudalib \
-// RUN:   --clangir-offload-merge -S -emit-llvm %s 2>&1 \
+// RUN:   --clangir-offload-merge -c %s 2>&1 \
 // RUN: | FileCheck %s --check-prefix=MERGE
 
 // Host and device translation units are first lowered to serialized CIR, then
-// combined into one cir.offload.container and split back, and finally each
-// module resumes the backend from -x cir.
-// MERGE: "-cc1" {{.*}}"-fclangir" {{.*}}"-emit-cir"
-// MERGE: "-cc1" {{.*}}"-fclangir" {{.*}}"-emit-cir" {{.*}}"-fcuda-is-device"
-// MERGE: "{{.*}}cir-offload-merge{{(\.exe)?}}" "-combine" "-targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda-unknown-sm_80"
-// MERGE: "{{.*}}cir-offload-merge{{(\.exe)?}}" "-split" "-targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda-unknown-sm_80"
-// MERGE: "-cc1" {{.*}}"-fclangir" {{.*}}"-emit-llvm-bc" {{.*}}"-fcuda-is-device" {{.*}}"-x" "cir"
-// MERGE: "-cc1" {{.*}}"-fclangir" {{.*}}"-emit-llvm" {{.*}}"-fcuda-include-gpubinary" {{.*}}"-x" "cir"
+// combined into one cir.offload.container and split back. Each module resumes
+// the backend from -x cir: the device module is lowered to PTX, assembled by
+// ptxas, and the resulting binary is embedded into the host object. The capture
+// variables track that every file is routed to the right consumer.
+
+// Host TU -> CIR.
+// MERGE: "-cc1"{{.*}} "-emit-cir"{{.*}} "-o" "[[HOST_CIR:[^"]+\.cir]]"
+// Device TU -> CIR.
+// MERGE: "-cc1"{{.*}} "-emit-cir"{{.*}} "-fcuda-is-device"{{.*}} "-o" "[[DEV_CIR:[^"]+\.cir]]"
+// Both CIR modules are forwarded as inputs to -combine; output is the container.
+// MERGE: "{{.*}}cir-offload-merge{{(\.exe)?}}" "-combine" "-targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda-unknown-sm_80" "-output=[[CONTAINER:[^"]+\.cir]]" "-input=[[HOST_CIR]]" "-input=[[DEV_CIR]]"
+// The container is split back into one output per target.
+// MERGE: "{{.*}}cir-offload-merge{{(\.exe)?}}" "-split" "-targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda-unknown-sm_80" "-input=[[CONTAINER]]" "-output=[[HOST_SPLIT:[^"]+\.cir]]" "-output=[[DEV_SPLIT:[^"]+\.cir]]"
+// Device module: CIR -> PTX assembly.
+// MERGE: "-cc1"{{.*}} "-S"{{.*}} "-fcuda-is-device"{{.*}} "-o" "[[DEV_PTX:[^"]+\.s]]"{{.*}} "-x" "cir" "[[DEV_SPLIT]]"
+// PTX -> cubin.
+// MERGE: "{{.*}}ptxas{{(\.exe)?}}"{{.*}} "--output-file" "[[DEV_CUBIN:[^"]+\.o]]"{{.*}} "[[DEV_PTX]]"
+// Host module: CIR -> object, embedding the device binary.
+// MERGE: "-cc1"{{.*}} "-emit-obj"{{.*}} "-fcuda-include-gpubinary" "[[DEV_CUBIN]]"{{.*}} "-x" "cir" "[[HOST_SPLIT]]"
 
 // Without --clangir-offload-merge the normal pipeline runs: no merge/split.
 // RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
-// RUN:   --cuda-gpu-arch=sm_80 -nocudainc -nocudalib -S -emit-llvm %s 2>&1 \
+// RUN:   --cuda-gpu-arch=sm_80 -nocudainc -nocudalib -c %s 2>&1 \
 // RUN: | FileCheck %s --check-prefix=NO-MERGE
 // NO-MERGE-NOT: "-combine"
 // NO-MERGE-NOT: "-split"

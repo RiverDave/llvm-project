@@ -5080,6 +5080,11 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
   if (isCIROffloadMerge(C, Args) && !Args.hasArg(options::OPT_emit_cir) &&
       isa<CompileJobAction>(HostAction) &&
       HostAction->getType() == types::TY_CIR) {
+    // TODO: HIP needs the device fatbin bundling step before the host embed;
+    // wired up in a follow-up. Until then only CUDA is supported here.
+    assert(!C.isOffloadingHostKind(Action::OFK_HIP) &&
+           "ClangIR offload merge for HIP is NYI");
+
     ActionList MergeInputs;
     MergeInputs.push_back(HostAction);
 
@@ -6466,12 +6471,6 @@ InputInfoList Driver::BuildJobsForActionNoCache(
     if (T->canEmitIR())
       handleTimeTrace(C, Args, JA, BaseInput, Result);
   }
-
-  if (TargetDeviceOffloadKind != Action::OFK_None &&
-      TargetDeviceOffloadKind != Action::OFK_Host &&
-      JA->getOffloadingDeviceKind() == Action::OFK_None)
-    const_cast<JobAction *>(JA)->propagateDeviceOffloadInfo(
-        TargetDeviceOffloadKind, BoundArch.data(), TC);
 
   if (CCCPrintBindings && !CCGenDiagnostics) {
     llvm::errs() << "# \"" << T->getToolChain().getEffectiveTriple().str()
