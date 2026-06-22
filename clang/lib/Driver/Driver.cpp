@@ -6472,6 +6472,17 @@ InputInfoList Driver::BuildJobsForActionNoCache(
       handleTimeTrace(C, Args, JA, BaseInput, Result);
   }
 
+  // The CIR offload-merge split feeds device modules back through -x cir
+  // without re-tagging the resulting backend actions, so their device offload
+  // kind is unset by the time the tool builds the cc1 command below. Stamp it
+  // here so the device tool chain (e.g. NVPTX) sees a valid offload kind.
+  if (isCIROffloadMerge(C, C.getArgs()) &&
+      TargetDeviceOffloadKind != Action::OFK_None &&
+      TargetDeviceOffloadKind != Action::OFK_Host &&
+      JA->getOffloadingDeviceKind() == Action::OFK_None)
+    const_cast<JobAction *>(JA)->propagateDeviceOffloadInfo(
+        TargetDeviceOffloadKind, BoundArch.data(), TC);
+
   if (CCCPrintBindings && !CCGenDiagnostics) {
     llvm::errs() << "# \"" << T->getToolChain().getEffectiveTriple().str()
                  << '"' << " - \"" << T->getName() << "\", inputs: [";
