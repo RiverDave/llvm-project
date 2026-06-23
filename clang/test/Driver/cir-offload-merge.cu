@@ -26,8 +26,10 @@
 // MERGE: "-cc1"{{.*}} "-S"{{.*}} "-fcuda-is-device"{{.*}} "-o" "[[DEV_PTX:[^"]+\.s]]"{{.*}} "-x" "cir" "[[DEV_SPLIT]]"
 // PTX -> cubin.
 // MERGE: "{{.*}}ptxas{{(\.exe)?}}"{{.*}} "--output-file" "[[DEV_CUBIN:[^"]+\.o]]"{{.*}} "[[DEV_PTX]]"
-// Host module: CIR -> object, embedding the device binary.
-// MERGE: "-cc1"{{.*}} "-emit-obj"{{.*}} "-fcuda-include-gpubinary" "[[DEV_CUBIN]]"{{.*}} "-x" "cir" "[[HOST_SPLIT]]"
+// cubin -> CUDA fatbinary.
+// MERGE: "{{.*}}fatbinary{{(\.exe)?}}"{{.*}} "--create" "[[DEV_FATBIN:[^"]+\.fatbin]]"{{.*}} "--image3=kind=elf,sm=80,file=[[DEV_CUBIN]]"
+// Host module: CIR -> object, embedding the device fatbinary.
+// MERGE: "-cc1"{{.*}} "-emit-obj"{{.*}} "-fcuda-include-gpubinary" "[[DEV_FATBIN]]"{{.*}} "-x" "cir" "[[HOST_SPLIT]]"
 
 // Without --clangir-offload-merge the normal pipeline runs: no merge/split.
 // RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \

@@ -3301,6 +3301,31 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
   }
 }
 
+// Wrap each device cubin and its ptx into per-target offload dependences and
+// link them into a single CUDA fatbinary.
+static Action *buildCudaFatBinary(Compilation &C,
+                                  ArrayRef<Action *> AssembleActions,
+                                  ArrayRef<const ToolChain *> ToolChains,
+                                  ArrayRef<const char *> BoundArchs) {
+  assert(AssembleActions.size() == ToolChains.size() &&
+         AssembleActions.size() == BoundArchs.size());
+  ActionList DeviceActions;
+  for (unsigned I = 0, E = AssembleActions.size(); I != E; ++I) {
+    Action *Assemble = AssembleActions[I];
+    assert(Assemble->getType() == types::TY_Object);
+    Action *Backend = Assemble->getInputs()[0];
+    assert(Backend->getType() == types::TY_PP_Asm);
+    for (Action *A : {Assemble, Backend}) {
+      OffloadAction::DeviceDependences DDep;
+      DDep.add(*A, *ToolChains[I], BoundArchs[I], Action::OFK_Cuda);
+      DeviceActions.push_back(C.MakeAction<OffloadAction>(DDep, A->getType()));
+    }
+  }
+  if (DeviceActions.empty())
+    return nullptr;
+  return C.MakeAction<LinkJobAction>(DeviceActions, types::TY_CUDA_FATBIN);
+}
+
 namespace {
 /// Provides a convenient interface for different programming models to generate
 /// the required device actions.
@@ -3658,7 +3683,9 @@ class OffloadingActionBuilder final {
       // fatbin.  The fatbin is then an input to the host action if not in
       // device-only mode.
       if (CompileDeviceOnly || CurPhase == phases::Backend) {
-        ActionList DeviceActions;
+        SmallVector<Action *, 4> AssembleActions;
+        SmallVector<const ToolChain *, 4> FatbinToolChains;
+        SmallVector<const char *, 4> FatbinArchs;
         for (unsigned I = 0, E = GpuArchList.size(); I != E; ++I) {
           // Produce the device action from the current phase up to the assemble
           // phase.
@@ -3685,25 +3712,15 @@ class OffloadingActionBuilder final {
               CompileDeviceOnly)
             continue;
 
-          Action *AssembleAction = CudaDeviceActions[I];
-          assert(AssembleAction->getType() == types::TY_Object);
-          assert(AssembleAction->getInputs().size() == 1);
-
-          Action *BackendAction = AssembleAction->getInputs()[0];
-          assert(BackendAction->getType() == types::TY_PP_Asm);
-
-          for (auto &A : {AssembleAction, BackendAction}) {
-            OffloadAction::DeviceDependences DDep;
-            DDep.add(*A, *ToolChains[I], GpuArchList[I], Action::OFK_Cuda);
-            DeviceActions.push_back(
-                C.MakeAction<OffloadAction>(DDep, A->getType()));
-          }
+          AssembleActions.push_back(CudaDeviceActions[I]);
+          FatbinToolChains.push_back(ToolChains[I]);
+          FatbinArchs.push_back(GpuArchList[I]);
         }
 
         // We generate the fat binary if we have device input actions.
-        if (!DeviceActions.empty()) {
-          CudaFatBinary =
-              C.MakeAction<LinkJobAction>(DeviceActions, types::TY_CUDA_FATBIN);
+        if (Action *FatBin = buildCudaFatBinary(C, AssembleActions,
+                                                FatbinToolChains, FatbinArchs)) {
+          CudaFatBinary = FatBin;
 
           if (!CompileDeviceOnly) {
             DA.add(*CudaFatBinary, *FatBinaryToolChain, /*BoundArch=*/nullptr,
@@ -4632,8 +4649,7 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
       if (isCIROffloadMerge(C, Args) &&
           (Phase == phases::Backend || Phase == phases::Assemble))
         if (auto *OA = dyn_cast<OffloadAction>(Current)) {
-          Action *HostAction = OA->getHostDependence();
-          HostAction = ConstructPhaseAction(C, Args, Phase, HostAction);
+          
 
           OffloadAction::DeviceDependences DDeps;
           OA->doOnEachDeviceDependence(
@@ -4644,8 +4660,21 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
                     ConstructPhaseAction(C, Args, Phase, DepA, Kind);
                 DeviceAction->propagateDeviceOffloadInfo(Kind, DepBoundArch,
                                                          DepTC);
+
+                // Wrap the assembled cubin into a CUDA. 
+                if (Kind == Action::OFK_Cuda &&
+                    isa<AssembleJobAction>(DeviceAction)) {
+                  Action *Fatbin = buildCudaFatBinary(C, DeviceAction, DepTC,
+                                                      DepBoundArch);
+                  DDeps.add(*Fatbin, *DepTC, /*BoundArch=*/nullptr, Kind);
+                  return;
+                }
+
                 DDeps.add(*DeviceAction, *DepTC, DepBoundArch, Kind);
               });
+
+          Action *HostAction = OA->getHostDependence();
+          HostAction = ConstructPhaseAction(C, Args, Phase, HostAction);
 
           OffloadAction::HostDependence HDep(
               *HostAction, *C.getSingleOffloadToolChain<Action::OFK_Host>(),
