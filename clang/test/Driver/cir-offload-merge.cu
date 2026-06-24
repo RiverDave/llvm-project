@@ -14,8 +14,11 @@
 // ptxas, and the resulting binary is embedded into the host object. The capture
 // variables track that every file is routed to the right consumer.
 
-// Host TU -> CIR.
-// MERGE: "-cc1"{{.*}} "-emit-cir"{{.*}} "-o" "[[HOST_CIR:[^"]+\.cir]]"
+// Host TU -> CIR. The host compile must carry the CUDA aux-triple (i.e. present
+// as a CUDA host compile) so it sees __global__, the runtime API, etc.; the
+// merge path used to drop this because the host action sits below the split
+// barrier and never received the host offload kind.
+// MERGE: "-cc1"{{.*}} "-aux-triple" "nvptx64-nvidia-cuda"{{.*}} "-emit-cir"{{.*}} "-o" "[[HOST_CIR:[^"]+\.cir]]"
 // Device TU -> CIR.
 // MERGE: "-cc1"{{.*}} "-emit-cir"{{.*}} "-fcuda-is-device"{{.*}} "-o" "[[DEV_CIR:[^"]+\.cir]]"
 // Both CIR modules are forwarded as inputs to -combine; output is the container.

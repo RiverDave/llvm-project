@@ -68,7 +68,9 @@ void Action::propagateDeviceOffloadInfo(OffloadKind OKind, const char *OArch,
   // Offload action set its own kinds on their dependences.
   if (Kind == OffloadClass)
     return;
-  if (Kind == CIRSplitJobClass) {
+  // Merge/split mix host and device inputs; stamp the node itself but do not
+  // recurse, so device info never bleeds into the host CIR compile.
+  if (Kind == CIRSplitJobClass || Kind == CIRMergeJobClass) {
     assert((OffloadingDeviceKind == OKind || OffloadingDeviceKind == OFK_None) &&
            "Setting device kind to a different device??");
     OffloadingDeviceKind = OKind;

@@ -5169,6 +5169,14 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
     if (MergeInputs.size() == 1)
       return HostAction;
 
+    // The host CIR compile sits below the split barrier, so host offload-kind
+    // propagation never reaches it. Stamp it directly so the host cc1 gets the
+    // CUDA setup (AddCudaIncludeArgs, -aux-triple) the stock host compile gets.
+    unsigned HostKinds = 0;
+    for (const CIROffloadDep &Dep : ArrayRef(Deps).drop_front())
+      HostKinds |= Dep.Kind;
+    HostAction->setHostOffloadInfo(HostKinds, /*OArch=*/nullptr);
+
     auto *Merge = C.MakeAction<CIRMergeJobAction>(MergeInputs);
     for (const CIROffloadDep &Dep : Deps)
       Merge->registerDependentActionInfo(Dep.TC, Dep.BoundArch, Dep.Kind);
