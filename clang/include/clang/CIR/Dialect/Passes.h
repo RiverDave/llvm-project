@@ -42,6 +42,10 @@ std::unique_ptr<Pass> createLoweringPreparePass();
 std::unique_ptr<Pass> createLoweringPreparePass(
     cir::LowerModule *lowerModule,
     llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr);
+std::unique_ptr<Pass> createCUDARegisterModulePass();
+std::unique_ptr<Pass> createCUDARegisterModulePass(
+    cir::LowerModule *lowerModule,
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr);
 std::unique_ptr<Pass> createMaterializeASTFactsPass();
 std::unique_ptr<Pass> createGotoSolverPass();
 std::unique_ptr<Pass> createIdiomRecognizerPass();

@@ -41,6 +41,7 @@ using namespace mlir;
 using namespace cir;
 
 namespace mlir {
+#define GEN_PASS_DEF_CUDAREGISTERMODULE
 #define GEN_PASS_DEF_LOWERINGPREPARE
 #include "clang/CIR/Dialect/Passes.h.inc"
 } // namespace mlir
@@ -166,15 +167,8 @@ struct LoweringPreparePass
       cudaDeviceVars;
 
   /// Build the CUDA module constructor that registers the fat binary
-  /// with the CUDA runtime.
+  /// with the CUDA runtime. Delegates to CUDAModuleRegistrationBuilder.
   void buildCUDAModuleCtor();
-  std::optional<FuncOp> buildCUDAModuleDtor();
-  std::optional<FuncOp> buildHIPModuleDtor();
-  std::optional<FuncOp> buildCUDARegisterGlobals();
-  void buildCUDARegisterVars(cir::CIRBaseBuilderTy &builder,
-                             FuncOp regGlobalFunc);
-  void buildCUDARegisterGlobalFunctions(cir::CIRBaseBuilderTy &builder,
-                                        FuncOp regGlobalFunc);
 
   /// Handle static local variable initialization with guard variables.
   void handleStaticLocal(cir::GlobalOp globalOp, cir::LocalInitOp localInitOp);
@@ -2314,6 +2308,73 @@ static std::string addUnderscoredPrefix(llvm::StringRef prefix,
   return ("__" + prefix + name).str();
 }
 
+namespace {
+// Emits the CUDA/HIP module ctor/dtor, fatbin globals and registration calls.
+// All target/LangOpts facts come from the LowerModule, so this runs equally on
+// the in-process CIRGen path and on a serialized .cir resumed by a later cc1.
+struct CUDAModuleRegistrationBuilder {
+  CUDAModuleRegistrationBuilder(
+      mlir::ModuleOp mlirModule, mlir::MLIRContext &context,
+      const cir::LowerModule &lm, llvm::VersionTuple sdkVersion,
+      llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs,
+      llvm::StringMap<FuncOp> &cudaKernelMap,
+      llvm::SmallVectorImpl<
+          std::pair<cir::GlobalOp, cir::CUDAVarRegistrationInfoAttr>>
+          &cudaDeviceVars,
+      llvm::SmallVectorImpl<std::pair<std::string, uint32_t>> &globalCtorList)
+      : mlirModule(mlirModule), context(context), lowerModule(&lm),
+        sdkVersion(sdkVersion), vfs(std::move(vfs)),
+        cudaKernelMap(cudaKernelMap), cudaDeviceVars(cudaDeviceVars),
+        globalCtorList(globalCtorList) {}
+
+  void buildCUDAModuleCtor();
+  std::optional<FuncOp> buildCUDAModuleDtor();
+  std::optional<FuncOp> buildHIPModuleDtor();
+  std::optional<FuncOp> buildCUDARegisterGlobals();
+  void buildCUDARegisterVars(cir::CIRBaseBuilderTy &builder,
+                             FuncOp regGlobalFunc);
+  void buildCUDARegisterGlobalFunctions(cir::CIRBaseBuilderTy &builder,
+                                        FuncOp regGlobalFunc);
+
+private:
+  mlir::MLIRContext &getContext() { return context; }
+
+  cir::FuncOp buildRuntimeFunction(
+      mlir::OpBuilder &builder, llvm::StringRef name, mlir::Location loc,
+      cir::FuncType type,
+      cir::GlobalLinkageKind linkage = cir::GlobalLinkageKind::ExternalLinkage);
+
+  mlir::ModuleOp mlirModule;
+  mlir::MLIRContext &context;
+  const cir::LowerModule *lowerModule;
+  // SDK version is read from TargetOptions, which the module-only LowerModule
+  // (cir-opt) lacks; the caller supplies it explicitly (empty when absent).
+  llvm::VersionTuple sdkVersion;
+  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs;
+  llvm::StringMap<FuncOp> &cudaKernelMap;
+  llvm::SmallVectorImpl<
+      std::pair<cir::GlobalOp, cir::CUDAVarRegistrationInfoAttr>>
+      &cudaDeviceVars;
+  llvm::SmallVectorImpl<std::pair<std::string, uint32_t>> &globalCtorList;
+};
+} // namespace
+
+cir::FuncOp CUDAModuleRegistrationBuilder::buildRuntimeFunction(
+    mlir::OpBuilder &builder, llvm::StringRef name, mlir::Location loc,
+    cir::FuncType type, cir::GlobalLinkageKind linkage) {
+  cir::FuncOp f = dyn_cast_or_null<FuncOp>(SymbolTable::lookupNearestSymbolFrom(
+      mlirModule, StringAttr::get(mlirModule->getContext(), name)));
+  if (!f) {
+    f = cir::FuncOp::create(builder, loc, name, type);
+    f.setLinkageAttr(
+        cir::GlobalLinkageKindAttr::get(builder.getContext(), linkage));
+    mlir::SymbolTable::setSymbolVisibility(
+        f, mlir::SymbolTable::Visibility::Private);
+    assert(!cir::MissingFeatures::opFuncExtraAttrs());
+  }
+  return f;
+}
+
 /// Creates a global constructor function for the module:
 ///
 /// For CUDA:
@@ -2333,7 +2394,7 @@ static std::string addUnderscoredPrefix(llvm::StringRef prefix,
 ///     }
 /// }
 /// \endcode
-void LoweringPreparePass::buildCUDAModuleCtor() {
+void CUDAModuleRegistrationBuilder::buildCUDAModuleCtor() {
   bool isHIP = lowerModule->getLangOpts().HIP;
 
   if (lowerModule->getLangOpts().GPURelocatableDeviceCode)
@@ -2547,7 +2608,7 @@ void LoweringPreparePass::buildCUDAModuleCtor() {
     //      void __cudaRegisterFatBinaryEnd(void **fatbinHandle);
     // This is CUDA-specific, so no need to use `addUnderscoredPrefix`.
     if (clang::CudaFeatureEnabled(
-            lowerModule->getTarget().getSDKVersion(),
+            sdkVersion,
             clang::CudaFeature::CUDA_USES_FATBIN_REGISTER_END)) {
       cir::CIRBaseBuilderTy globalBuilder(getContext());
       globalBuilder.setInsertionPointToStart(mlirModule.getBody());
@@ -2578,7 +2639,7 @@ void LoweringPreparePass::buildCUDAModuleCtor() {
   cir::ReturnOp::create(builder, loc);
 }
 
-std::optional<FuncOp> LoweringPreparePass::buildCUDAModuleDtor() {
+std::optional<FuncOp> CUDAModuleRegistrationBuilder::buildCUDAModuleDtor() {
   if (!mlirModule->getAttr(CIRDialect::getCUDABinaryHandleAttrName()))
     return {};
 
@@ -2635,7 +2696,7 @@ std::optional<FuncOp> LoweringPreparePass::buildCUDAModuleDtor() {
 /// Despite the name, OG doesn't treat this as a real destructor: putting it on
 /// the dtor list would cause a double-free. It is meant to be registered via
 /// atexit() at the end of the module ctor.
-std::optional<FuncOp> LoweringPreparePass::buildHIPModuleDtor() {
+std::optional<FuncOp> CUDAModuleRegistrationBuilder::buildHIPModuleDtor() {
   if (!mlirModule->getAttr(CIRDialect::getCUDABinaryHandleAttrName()))
     return {};
 
@@ -2694,7 +2755,7 @@ std::optional<FuncOp> LoweringPreparePass::buildHIPModuleDtor() {
   return dtor;
 }
 
-std::optional<FuncOp> LoweringPreparePass::buildCUDARegisterGlobals() {
+std::optional<FuncOp> CUDAModuleRegistrationBuilder::buildCUDARegisterGlobals() {
   if (cudaKernelMap.empty() && cudaDeviceVars.empty())
     return {};
 
@@ -2725,7 +2786,7 @@ std::optional<FuncOp> LoweringPreparePass::buildCUDARegisterGlobals() {
   return regGlobalFunc;
 }
 
-void LoweringPreparePass::buildCUDARegisterGlobalFunctions(
+void CUDAModuleRegistrationBuilder::buildCUDARegisterGlobalFunctions(
     cir::CIRBaseBuilderTy &builder, FuncOp regGlobalFunc) {
   mlir::Location loc = mlirModule.getLoc();
   llvm::StringRef cudaPrefix = getCUDAPrefix(lowerModule);
@@ -2812,7 +2873,7 @@ void LoweringPreparePass::buildCUDARegisterGlobalFunctions(
 // Emit `__{cuda|hip}RegisterVar` calls inside `__{cuda|hip}_register_globals`
 // for every device-side shadow that carries a `cu.var_registration` attribute
 // (attached by `CIRGenNVCUDARuntime::handleVarRegistration`).
-void LoweringPreparePass::buildCUDARegisterVars(cir::CIRBaseBuilderTy &builder,
+void CUDAModuleRegistrationBuilder::buildCUDARegisterVars(cir::CIRBaseBuilderTy &builder,
                                                 FuncOp regGlobalFunc) {
   mlir::Location loc = mlirModule.getLoc();
   llvm::StringRef cudaPrefix = getCUDAPrefix(lowerModule);
@@ -2891,6 +2952,118 @@ void LoweringPreparePass::buildCUDARegisterVars(cir::CIRBaseBuilderTy &builder,
   }
 }
 
+void LoweringPreparePass::buildCUDAModuleCtor() {
+  CUDAModuleRegistrationBuilder builder(
+      mlirModule, getContext(), *lowerModule,
+      lowerModule->getTarget().getSDKVersion(), vfs, cudaKernelMap,
+      cudaDeviceVars, globalCtorList);
+  builder.buildCUDAModuleCtor();
+}
+
+// Walk the module collecting the kernel stubs (carrying `cu.kernel_name`) and
+// device-side shadow globals (carrying `cu.var_registration`) that the
+// registration ctor needs. Used by the standalone pass, where these are not
+// already gathered by LoweringPrepare's main walk.
+static void collectCUDARegistrationOps(
+    mlir::ModuleOp module, llvm::StringMap<FuncOp> &cudaKernelMap,
+    llvm::SmallVectorImpl<
+        std::pair<cir::GlobalOp, cir::CUDAVarRegistrationInfoAttr>>
+        &cudaDeviceVars) {
+  module.walk([&](mlir::Operation *op) {
+    if (auto glob = mlir::dyn_cast<cir::GlobalOp>(op)) {
+      if (auto regAttr = glob->getAttrOfType<CUDAVarRegistrationInfoAttr>(
+              CUDAVarRegistrationInfoAttr::getMnemonic()))
+        cudaDeviceVars.emplace_back(glob, regAttr);
+      return;
+    }
+
+    if (auto fnOp = dyn_cast<cir::FuncOp>(op)) {
+      if (mlir::Attribute attr =
+              fnOp->getAttr(cir::CUDAKernelNameAttr::getMnemonic())) {
+        auto kernelNameAttr = dyn_cast<CUDAKernelNameAttr>(attr);
+        cudaKernelMap[kernelNameAttr.getKernelName()] = fnOp;
+      }
+    }
+  });
+}
+
+static void appendGlobalCtorList(
+    mlir::ModuleOp module, mlir::MLIRContext &context,
+    llvm::ArrayRef<std::pair<std::string, uint32_t>> globalCtorList) {
+  if (globalCtorList.empty())
+    return;
+
+  llvm::SmallVector<mlir::Attribute> attrs;
+  if (auto existing = module->getAttrOfType<mlir::ArrayAttr>(
+          cir::CIRDialect::getGlobalCtorsAttrName())) {
+    for (mlir::Attribute attr : existing.getValue())
+      attrs.push_back(attr);
+  }
+
+  for (mlir::Attribute attr :
+       prepareCtorDtorAttrList<cir::GlobalCtorAttr>(&context, globalCtorList))
+    attrs.push_back(attr);
+  module->setAttr(cir::CIRDialect::getGlobalCtorsAttrName(),
+                  mlir::ArrayAttr::get(&context, attrs));
+}
+
+namespace {
+// Standalone scheduling vehicle for CUDA registration on the .cir resume path,
+// where LoweringPrepare has already run (pre-serialization) and the fatbin only
+// becomes available at the second cc1 invocation. The LowerModule is handed in
+// from the surrounding invocation; cir-opt builds one from the module's triple.
+struct CUDARegisterModulePass
+    : public impl::CUDARegisterModuleBase<CUDARegisterModulePass> {
+  CUDARegisterModulePass() = default;
+
+  CUDARegisterModulePass(const CUDARegisterModulePass &other)
+      : impl::CUDARegisterModuleBase<CUDARegisterModulePass>(other),
+        lowerModule(other.lowerModule), vfs(other.vfs) {}
+
+  CUDARegisterModulePass(cir::LowerModule *lowerModule,
+                         llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs)
+      : lowerModule(lowerModule), vfs(std::move(vfs)) {}
+
+  void runOnOperation() override {
+    mlir::ModuleOp module = getOperation();
+
+    std::unique_ptr<cir::LowerModule> ownedLowerModule;
+    cir::LowerModule *lm = lowerModule;
+    if (!lm) {
+      ownedLowerModule = cir::createLowerModule(module);
+      if (!ownedLowerModule) {
+        module.emitError("CUDA registration requires a module triple");
+        signalPassFailure();
+        return;
+      }
+      lm = ownedLowerModule.get();
+    }
+
+    // SDK version comes from TargetOptions, present only on the invocation-built
+    // LowerModule (resume path). The module-only fallback (cir-opt) has none.
+    llvm::VersionTuple sdkVersion;
+    if (lowerModule)
+      sdkVersion = lowerModule->getTarget().getSDKVersion();
+
+    llvm::StringMap<FuncOp> cudaKernelMap;
+    llvm::SmallVector<std::pair<cir::GlobalOp, cir::CUDAVarRegistrationInfoAttr>>
+        cudaDeviceVars;
+    collectCUDARegistrationOps(module, cudaKernelMap, cudaDeviceVars);
+
+    llvm::SmallVector<std::pair<std::string, uint32_t>, 4> globalCtorList;
+    CUDAModuleRegistrationBuilder builder(module, getContext(), *lm, sdkVersion,
+                                          vfs, cudaKernelMap, cudaDeviceVars,
+                                          globalCtorList);
+    builder.buildCUDAModuleCtor();
+    appendGlobalCtorList(module, getContext(), globalCtorList);
+  }
+
+private:
+  cir::LowerModule *lowerModule = nullptr;
+  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs;
+};
+} // namespace
+
 void LoweringPreparePass::runOnOperation() {
   mlir::Operation *op = getOperation();
   if (isa<::mlir::ModuleOp>(op))
@@ -2920,6 +3093,16 @@ void LoweringPreparePass::runOnOperation() {
 
 std::unique_ptr<Pass> mlir::createLoweringPreparePass() {
   return std::make_unique<LoweringPreparePass>();
+}
+
+std::unique_ptr<Pass> mlir::createCUDARegisterModulePass() {
+  return std::make_unique<CUDARegisterModulePass>();
+}
+
+std::unique_ptr<Pass> mlir::createCUDARegisterModulePass(
+    cir::LowerModule *lowerModule,
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs) {
+  return std::make_unique<CUDARegisterModulePass>(lowerModule, std::move(vfs));
 }
 
 std::unique_ptr<Pass> mlir::createLoweringPreparePass(

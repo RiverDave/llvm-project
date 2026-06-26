@@ -184,6 +184,17 @@ def LoweringPrepare : Pass<"cir-lowering-prepare"> {
   let dependentDialects = ["cir::CIRDialect"];
 }
 
+def CUDARegisterModule : Pass<"cir-cuda-register-module", "mlir::ModuleOp"> {
+  let summary = "Build CUDA module registration runtime calls";
+  let description = [{
+    This pass emits the CUDA/HIP module constructor, destructor, fatbin globals,
+    and kernel/device variable registration calls from serialized CIR CUDA
+    registration attributes.
+  }];
+  let constructor = "mlir::createCUDARegisterModulePass()";
+  let dependentDialects = ["cir::CIRDialect"];
+}
+
 def MaterializeASTFacts : Pass<"cir-materialize-ast-facts", "mlir::ModuleOp"> {
   let summary = "Cache AST-derived facts as CIR attributes";
   let description = [{
