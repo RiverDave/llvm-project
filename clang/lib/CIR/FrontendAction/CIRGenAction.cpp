@@ -172,7 +172,14 @@ makeLowerModuleFromInvocation(CompilerInstance &CI, mlir::ModuleOp module) {
                                           CI.getInvocation().getTargetOpts()));
   if (!target)
     return nullptr;
-  return cir::createLowerModule(module, CI.getLangOpts(), CI.getCodeGenOpts(),
+  // On the .cir resume path the input language is CIR, so LangOpts.HIP is unset
+  // even for HIP. Recover the device flavor from the aux-triple (amdgcn for HIP)
+  // so the registration pass emits the HIP runtime calls instead of CUDA's.
+  clang::LangOptions langOpts = CI.getLangOpts();
+  if (!langOpts.HIP && !CI.getFrontendOpts().AuxTriple.empty() &&
+      llvm::Triple(CI.getFrontendOpts().AuxTriple).isAMDGPU())
+    langOpts.HIP = true;
+  return cir::createLowerModule(module, langOpts, CI.getCodeGenOpts(),
                                 std::move(target));
 }
 
