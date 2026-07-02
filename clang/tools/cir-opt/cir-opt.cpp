@@ -75,6 +75,10 @@ int main(int argc, char **argv) {
   });
 
   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+    return mlir::createCUDARegisterModulePass();
+  });
+
+  ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
     return mlir::createGotoSolverPass();
   });
 
@@ -88,6 +92,14 @@ int main(int argc, char **argv) {
 
   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
     return mlir::createCallConvLoweringPass();
+  });
+
+  ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+    return mlir::createMaterializeASTFactsPass();
+  });
+
+  ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+    return mlir::createLoweringPreparePass();
   });
 
   mlir::omp::registerOpenMPPasses();

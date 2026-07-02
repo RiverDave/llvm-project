@@ -158,8 +158,6 @@ struct MissingFeatures {
   static bool globalCtorAssociatedData() { return false; }
 
   // LowerModule handling
-  static bool lowerModuleCodeGenOpts() { return false; }
-  static bool lowerModuleLangOpts() { return false; }
   static bool targetLoweringInfo() { return false; }
 
   // Extra checks for lowerGetMethod in ItaniumCXXABI

@@ -22,10 +22,19 @@ namespace cir {
 /// mode instead of selecting a target.
 enum class CallConvTarget { None, Test, X86_64 };
 } // namespace cir
+#include "llvm/ADT/IntrusiveRefCntPtr.h"
 
 namespace clang {
 class ASTContext;
 }
+
+namespace llvm::vfs {
+class FileSystem;
+} // namespace llvm::vfs
+
+namespace cir {
+class LowerModule;
+} // namespace cir
 
 namespace mlir {
 
@@ -42,7 +51,14 @@ createCallConvLoweringPass(cir::CallConvTarget target,
                            const llvm::abi::ABICompatInfo &x86AbiCompat);
 std::unique_ptr<Pass> createHoistAllocasPass();
 std::unique_ptr<Pass> createLoweringPreparePass();
-std::unique_ptr<Pass> createLoweringPreparePass(clang::ASTContext *astCtx);
+std::unique_ptr<Pass> createLoweringPreparePass(
+    cir::LowerModule *lowerModule,
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr);
+std::unique_ptr<Pass> createCUDARegisterModulePass();
+std::unique_ptr<Pass> createCUDARegisterModulePass(
+    cir::LowerModule *lowerModule,
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr);
+std::unique_ptr<Pass> createMaterializeASTFactsPass();
 std::unique_ptr<Pass> createGotoSolverPass();
 std::unique_ptr<Pass> createIdiomRecognizerPass();
 std::unique_ptr<Pass> createLibOptPass();
