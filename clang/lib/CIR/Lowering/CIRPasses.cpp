@@ -10,22 +10,29 @@
 //
 //===----------------------------------------------------------------------===//
 
-// #include "clang/AST/ASTContext.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "clang/CIR/Dialect/Passes.h"
 #include "llvm/Support/TimeProfiler.h"
+#include "llvm/Support/VirtualFileSystem.h"
 
 namespace cir {
 mlir::LogicalResult
 runCIRToCIRPasses(mlir::ModuleOp theModule, mlir::MLIRContext &mlirContext,
-                  clang::ASTContext &astContext, bool enableVerifier,
-                  bool enableIdiomRecognizer, bool enableCIRSimplify) {
+                  clang::ASTContext &astContext, cir::LowerModule &lowerModule,
+                  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs,
+                  bool enableVerifier, bool enableIdiomRecognizer,
+                  bool enableCIRSimplify) {
 
   llvm::TimeTraceScope scope("CIR To CIR Passes");
 
   mlir::PassManager pm(&mlirContext);
   pm.addPass(mlir::createCIRCanonicalizePass());
+
+  // Snapshot AST-derived facts into CIR attributes while the ASTContext is
+  // still live, so later passes (notably LoweringPrepare) can run on
+  // serialized CIR without an AST.
+  pm.addPass(mlir::createMaterializeASTFactsPass());
 
   if (enableCIRSimplify)
     pm.addPass(mlir::createCIRSimplifyPass());
@@ -35,7 +42,7 @@ runCIRToCIRPasses(mlir::ModuleOp theModule, mlir::MLIRContext &mlirContext,
 
   pm.addPass(mlir::createTargetLoweringPass());
   pm.addPass(mlir::createCXXABILoweringPass());
-  pm.addPass(mlir::createLoweringPreparePass(&astContext));
+  pm.addPass(mlir::createLoweringPreparePass(&lowerModule, std::move(vfs)));
 
   pm.enableVerifier(enableVerifier);
   (void)mlir::applyPassManagerCLOptions(pm);

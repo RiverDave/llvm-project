@@ -14,10 +14,19 @@
 #define CLANG_CIR_DIALECT_PASSES_H
 
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/IntrusiveRefCntPtr.h"
 
 namespace clang {
 class ASTContext;
 }
+
+namespace llvm::vfs {
+class FileSystem;
+} // namespace llvm::vfs
+
+namespace cir {
+class LowerModule;
+} // namespace cir
 
 namespace mlir {
 
@@ -30,7 +39,14 @@ std::unique_ptr<Pass> createTargetLoweringPass();
 std::unique_ptr<Pass> createCallConvLoweringPass();
 std::unique_ptr<Pass> createHoistAllocasPass();
 std::unique_ptr<Pass> createLoweringPreparePass();
-std::unique_ptr<Pass> createLoweringPreparePass(clang::ASTContext *astCtx);
+std::unique_ptr<Pass> createLoweringPreparePass(
+    cir::LowerModule *lowerModule,
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr);
+std::unique_ptr<Pass> createCUDARegisterModulePass();
+std::unique_ptr<Pass> createCUDARegisterModulePass(
+    cir::LowerModule *lowerModule,
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr);
+std::unique_ptr<Pass> createMaterializeASTFactsPass();
 std::unique_ptr<Pass> createGotoSolverPass();
 std::unique_ptr<Pass> createIdiomRecognizerPass();
 std::unique_ptr<Pass> createIdiomRecognizerPass(clang::ASTContext *astCtx);

@@ -1,0 +1,40 @@
+// Create a dummy GPU binary file for registration.
+// RUN: echo -n "GPU binary would be here." > %t.fatbin
+
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-cir \
+// RUN:   -fcuda-include-gpubinary %t.fatbin %s -o - \
+// RUN:   | FileCheck %s --check-prefix=ATTR
+
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-llvm \
+// RUN:   -fcuda-include-gpubinary %t.fatbin %s -o - \
+// RUN:   | FileCheck %s --check-prefix=LLVM
+
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-llvm %s -o - \
+// RUN:   | FileCheck %s --check-prefix=NOFATBIN
+
+module {
+  cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
+    cir.return
+  }
+}
+
+// ATTR: cir.cu.binary_handle = #cir.cu.binary_handle<"{{.*}}.fatbin">
+
+// LLVM: @__cuda_fatbin_str = private constant
+// LLVM-SAME: section ".nv_fatbin"
+// LLVM: @__cuda_fatbin_wrapper = {{.*}}constant
+// LLVM-SAME: section ".nvFatBinSegment"
+// LLVM: @__cuda_gpubin_handle = internal global ptr null
+// LLVM: @llvm.global_ctors = appending global
+// LLVM-SAME: @__cuda_module_ctor
+// LLVM: define internal void @__cuda_register_globals
+// LLVM: call{{.*}}@__cudaRegisterFunction
+// LLVM: define internal void @__cuda_module_ctor
+// LLVM: call{{.*}}@__cudaRegisterFatBinary
+// LLVM: call void @__cuda_register_globals
+
+// NOFATBIN-NOT: __cuda_fatbin
+// NOFATBIN-NOT: __cudaRegisterFatBinary
+// NOFATBIN-NOT: __cudaRegisterFunction
+// NOFATBIN-NOT: __cuda_register_globals
+// NOFATBIN-NOT: __cuda_module_ctor

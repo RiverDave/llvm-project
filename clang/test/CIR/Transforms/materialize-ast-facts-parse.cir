@@ -1,0 +1,19 @@
+// RUN: cir-opt %s -o - | FileCheck %s
+
+// Round-trip the StaticLocalInfoAttr through the parser/printer. This proves
+// the attribute has no hidden AST dependency and can be read from textual CIR.
+
+!s32i = !cir.int<s, 32>
+
+module {
+  cir.global "private" internal @counter = #cir.int<0> : !s32i
+    {ast = #cir.static_local_info<is_local_var_decl = true, tls = 0,
+                                  is_inline = false, tsk = 0>}
+}
+
+// CHECK: cir.global
+// CHECK-SAME: #cir.static_local_info<
+// CHECK-SAME: is_local_var_decl = true
+// CHECK-SAME: tls = 0
+// CHECK-SAME: is_inline = false
+// CHECK-SAME: tsk = 0

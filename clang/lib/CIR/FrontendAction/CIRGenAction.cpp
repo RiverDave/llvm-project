@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/CIR/FrontendAction/CIRGenAction.h"
+#include "TargetLowering/LowerModule.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -18,9 +19,13 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
+#include "clang/CIR/Dialect/Passes.h"
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/CIR/CIRGenerator.h"
 #include "clang/CIR/CIRToCIRPasses.h"
+#include "clang/CIR/Dialect/IR/CIRAttrs.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/OpenMP/RegisterOpenMPExtensions.h"
 #include "clang/CIR/LowerToLLVM.h"
@@ -38,6 +43,7 @@
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/Internalize.h"
 
@@ -155,6 +161,61 @@ static bool linkInModules(CompilerInstance &CI, CodeGenOptions &CGO,
   return false;
 }
 
+// Build a LowerModule from the surrounding cc1 invocation. Used both for
+// in-process CIRGen (where the same TargetInfo also drives the AST) and for
+// the .cir input path, where there is no AST at all.
+static std::unique_ptr<cir::LowerModule>
+makeLowerModuleFromInvocation(CompilerInstance &CI, mlir::ModuleOp module) {
+  // Clone TargetInfo: LowerModule takes ownership and CI keeps its copy.
+  auto target = std::unique_ptr<clang::TargetInfo>(
+      clang::TargetInfo::CreateTargetInfo(CI.getDiagnostics(),
+                                          CI.getInvocation().getTargetOpts()));
+  if (!target)
+    return nullptr;
+  return cir::createLowerModule(module, CI.getLangOpts(), CI.getCodeGenOpts(),
+                                std::move(target));
+}
+
+// On the .cir resume path the fatbin only exists at this second cc1 invocation
+// (it is produced downstream of the serialized host.cir). Stamp its path so the
+// registration pass can find it. Returns true if a binary was passed.
+static bool stampCUDABinaryHandle(CompilerInstance &CI,
+                                  mlir::ModuleOp mlirModule,
+                                  mlir::MLIRContext &mlirContext) {
+  llvm::StringRef cudaBinaryName = CI.getCodeGenOpts().CudaGpuBinaryFileName;
+  if (cudaBinaryName.empty())
+    return false;
+
+  mlirModule->setAttr(
+      cir::CIRDialect::getCUDABinaryHandleAttrName(),
+      cir::CUDABinaryHandleAttr::get(
+          &mlirContext, mlir::StringAttr::get(&mlirContext, cudaBinaryName)));
+  return true;
+}
+
+// LoweringPrepare already ran (pre-serialization) on this module, so run only
+// the registration step here, sourcing target facts from a LowerModule built
+// off the surrounding invocation.
+static bool runCUDARegisterModulePass(CompilerInstance &CI,
+                                      mlir::ModuleOp mlirModule,
+                                      mlir::MLIRContext &mlirContext) {
+  std::unique_ptr<cir::LowerModule> lowerModule =
+      makeLowerModuleFromInvocation(CI, mlirModule);
+  if (!lowerModule) {
+    reportError(CI, "failed to build LowerModule for CUDA registration");
+    return true;
+  }
+
+  mlir::PassManager pm(&mlirContext);
+  pm.addPass(mlir::createCUDARegisterModulePass(lowerModule.get(),
+                                                &CI.getVirtualFileSystem()));
+  if (mlir::failed(pm.run(mlirModule))) {
+    reportError(CI, "failed to run CUDA registration pass");
+    return true;
+  }
+  return false;
+}
+
 class CIRGenConsumer : public clang::ASTConsumer {
 
   virtual void anchor();
@@ -228,9 +289,17 @@ public:
 
     if (!FEOptions.ClangIRDisablePasses) {
       // Setup and run CIR pipeline.
-      if (runCIRToCIRPasses(
-              MlirModule, MlirCtx, C, !FEOptions.ClangIRDisableCIRVerifier,
-              FEOptions.ClangIREnableIdiomRecognizer, CGO.OptimizationLevel > 0)
+      std::unique_ptr<cir::LowerModule> lowerModule =
+          makeLowerModuleFromInvocation(CI, MlirModule);
+      if (!lowerModule) {
+        CI.getDiagnostics().Report(diag::err_cir_to_cir_transform_failed);
+        return;
+      }
+      if (runCIRToCIRPasses(MlirModule, MlirCtx, C, *lowerModule,
+                            &CI.getVirtualFileSystem(),
+                            !FEOptions.ClangIRDisableCIRVerifier,
+                            FEOptions.ClangIREnableIdiomRecognizer,
+                            CGO.OptimizationLevel > 0)
               .failed()) {
         CI.getDiagnostics().Report(diag::err_cir_to_cir_transform_failed);
         return;
@@ -359,12 +428,18 @@ void CIRGenAction::ExecuteAction() {
   if (!MLIRMod)
     return;
 
+  // Stamp before the emit-cir early return so `-emit-cir` reflects the handle.
+  bool hasCUDABinary = stampCUDABinaryHandle(CI, *MLIRMod, *MLIRCtx);
+
   if (Action == OutputType::EmitCIR) {
     mlir::OpPrintingFlags Flags;
     Flags.enableDebugInfo(/*enable=*/true, /*prettyForm=*/false);
     MLIRMod->print(*OS, Flags);
     return;
   }
+
+  if (hasCUDABinary && runCUDARegisterModulePass(CI, *MLIRMod, *MLIRCtx))
+    return;
 
   std::string mlirSaveTempsOutFile;
   if (!CI.getCodeGenOpts().SaveTempsFilePrefix.empty()) {
