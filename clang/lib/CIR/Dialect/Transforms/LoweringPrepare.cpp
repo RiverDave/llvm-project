@@ -527,9 +527,12 @@ cir::GlobalOp LoweringPreparePass::getOrCreateRuntimeVariable(
   return g;
 }
 
-cir::FuncOp LoweringPreparePass::buildRuntimeFunction(
-    mlir::OpBuilder &builder, llvm::StringRef name, mlir::Location loc,
-    cir::FuncType type, cir::GlobalLinkageKind linkage) {
+static cir::FuncOp getOrCreateRuntimeFunction(mlir::OpBuilder &builder,
+                                              mlir::ModuleOp mlirModule,
+                                              llvm::StringRef name,
+                                              mlir::Location loc,
+                                              cir::FuncType type,
+                                              cir::GlobalLinkageKind linkage) {
   cir::FuncOp f = dyn_cast_or_null<FuncOp>(SymbolTable::lookupNearestSymbolFrom(
       mlirModule, StringAttr::get(mlirModule->getContext(), name)));
   if (!f) {
@@ -542,6 +545,13 @@ cir::FuncOp LoweringPreparePass::buildRuntimeFunction(
     assert(!cir::MissingFeatures::opFuncExtraAttrs());
   }
   return f;
+}
+
+cir::FuncOp LoweringPreparePass::buildRuntimeFunction(
+    mlir::OpBuilder &builder, llvm::StringRef name, mlir::Location loc,
+    cir::FuncType type, cir::GlobalLinkageKind linkage) {
+  return getOrCreateRuntimeFunction(builder, mlirModule, name, loc, type,
+                                    linkage);
 }
 
 static mlir::Value lowerScalarToComplexCast(mlir::MLIRContext &ctx,
@@ -1895,7 +1905,7 @@ void LoweringPreparePass::buildCXXGlobalInitFunc() {
 /// region is non-empty, the ctor loop is wrapped in a cir.cleanup.scope whose
 /// EH cleanup performs a reverse destruction loop using the partial dtor body.
 static void lowerArrayDtorCtorIntoLoop(cir::CIRBaseBuilderTy &builder,
-                                       const cir::LowerModule *lm,
+                                       const cir::LowerModule *lowerModule,
                                        mlir::Operation *op, mlir::Type eltTy,
                                        mlir::Value addr,
                                        mlir::Value numElements,
@@ -1905,8 +1915,8 @@ static void lowerArrayDtorCtorIntoLoop(cir::CIRBaseBuilderTy &builder,
 
   // TODO: instead of getting the size from the lower module, create alias for
   // PtrDiffTy and unify with CIRGen stuff.
-  const unsigned sizeTypeSize =
-      lm->getTarget().getTypeWidth(lm->getTarget().getSignedSizeType());
+  const unsigned sizeTypeSize = lowerModule->getTarget().getTypeWidth(
+      lowerModule->getTarget().getSignedSizeType());
 
   // Both constructors and destructors use end = begin + numElements.
   // Constructors iterate forward [begin, end).  Destructors iterate backward
@@ -2297,8 +2307,8 @@ void LoweringPreparePass::runOnOp(mlir::Operation *op) {
   }
 }
 
-static llvm::StringRef getCUDAPrefix(const cir::LowerModule *lm) {
-  if (lm->getLangOpts().HIP)
+static llvm::StringRef getCUDAPrefix(const cir::LowerModule *lowerModule) {
+  if (lowerModule->getLangOpts().HIP)
     return "hip";
   return "cuda";
 }
@@ -2315,14 +2325,14 @@ namespace {
 struct CUDAModuleRegistrationBuilder {
   CUDAModuleRegistrationBuilder(
       mlir::ModuleOp mlirModule, mlir::MLIRContext &context,
-      const cir::LowerModule &lm, llvm::VersionTuple sdkVersion,
+      const cir::LowerModule &lowerModule, llvm::VersionTuple sdkVersion,
       llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs,
       llvm::StringMap<FuncOp> &cudaKernelMap,
       llvm::SmallVectorImpl<
           std::pair<cir::GlobalOp, cir::CUDAVarRegistrationInfoAttr>>
           &cudaDeviceVars,
       llvm::SmallVectorImpl<std::pair<std::string, uint32_t>> &globalCtorList)
-      : mlirModule(mlirModule), context(context), lowerModule(&lm),
+      : mlirModule(mlirModule), context(context), lowerModule(&lowerModule),
         sdkVersion(sdkVersion), vfs(std::move(vfs)),
         cudaKernelMap(cudaKernelMap), cudaDeviceVars(cudaDeviceVars),
         globalCtorList(globalCtorList) {}
@@ -2362,17 +2372,8 @@ private:
 cir::FuncOp CUDAModuleRegistrationBuilder::buildRuntimeFunction(
     mlir::OpBuilder &builder, llvm::StringRef name, mlir::Location loc,
     cir::FuncType type, cir::GlobalLinkageKind linkage) {
-  cir::FuncOp f = dyn_cast_or_null<FuncOp>(SymbolTable::lookupNearestSymbolFrom(
-      mlirModule, StringAttr::get(mlirModule->getContext(), name)));
-  if (!f) {
-    f = cir::FuncOp::create(builder, loc, name, type);
-    f.setLinkageAttr(
-        cir::GlobalLinkageKindAttr::get(builder.getContext(), linkage));
-    mlir::SymbolTable::setSymbolVisibility(
-        f, mlir::SymbolTable::Visibility::Private);
-    assert(!cir::MissingFeatures::opFuncExtraAttrs());
-  }
-  return f;
+  return getOrCreateRuntimeFunction(builder, mlirModule, name, loc, type,
+                                    linkage);
 }
 
 /// Creates a global constructor function for the module:
