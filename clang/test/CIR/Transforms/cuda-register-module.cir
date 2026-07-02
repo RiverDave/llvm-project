@@ -1,0 +1,36 @@
+// Create a dummy GPU binary file for registration.
+// RUN: echo -n "GPU binary would be here." > %t.fatbin
+
+// RUN: sed 's|FATBIN|%t.fatbin|g' %s > %t.with-fatbin.cir
+// RUN: cir-opt %t.with-fatbin.cir -cir-cuda-register-module -o - \
+// RUN:   | FileCheck %s --check-prefix=CUDA
+
+// RUN: sed 's|, cir.cu.binary_handle = #cir.cu.binary_handle<"FATBIN">||g' %s > %t.no-fatbin.cir
+// RUN: cir-opt %t.no-fatbin.cir -cir-cuda-register-module -o - \
+// RUN:   | FileCheck %s --check-prefix=NOFATBIN
+
+module attributes {cir.triple = "x86_64-unknown-linux-gnu", cir.cu.binary_handle = #cir.cu.binary_handle<"FATBIN">} {
+  cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
+    cir.return
+  }
+}
+
+// CUDA: cir.global_ctors = [#cir.global_ctor<"__cuda_module_ctor", 65535>]
+// CUDA: cir.func private @__cudaRegisterFunction
+// CUDA: cir.func internal private @__cuda_register_globals
+// CUDA: cir.call @__cudaRegisterFunction
+// CUDA: cir.global "private" constant cir_private @__cuda_fatbin_str
+// CUDA-SAME: section = ".nv_fatbin"
+// CUDA: cir.global constant cir_private @__cuda_fatbin_wrapper
+// CUDA-SAME: section = ".nvFatBinSegment"
+// CUDA: cir.global "private" internal @__cuda_gpubin_handle
+// CUDA: cir.func private @__cudaRegisterFatBinary
+// CUDA: cir.func internal private @__cuda_module_ctor
+// CUDA: cir.call @__cudaRegisterFatBinary
+// CUDA: cir.call @__cuda_register_globals
+
+// NOFATBIN-NOT: __cuda_fatbin
+// NOFATBIN-NOT: __cudaRegisterFatBinary
+// NOFATBIN-NOT: __cudaRegisterFunction
+// NOFATBIN-NOT: __cuda_register_globals
+// NOFATBIN-NOT: __cuda_module_ctor

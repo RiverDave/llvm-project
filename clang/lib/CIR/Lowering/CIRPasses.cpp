@@ -18,7 +18,7 @@
 #include "clang/CIR/Dialect/Passes.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/TargetParser/Triple.h"
-
+#include "llvm/Support/VirtualFileSystem.h"
 namespace cir {
 
 /// Map a target triple to the ABI target that drives CallConvLowering.
@@ -75,15 +75,20 @@ getX86ABICompatInfo(const clang::ASTContext &astContext) {
 
 mlir::LogicalResult
 runCIRToCIRPasses(mlir::ModuleOp theModule, mlir::MLIRContext &mlirContext,
-                  clang::ASTContext &astContext, bool enableVerifier,
-                  bool enableIdiomRecognizer, bool enableCIRSimplify,
-                  bool enableLibOpt, llvm::StringRef libOptOptions,
-                  bool enableCallConvLowering) {
-
+                  clang::ASTContext &astContext, cir::LowerModule &lowerModule,
+                  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs,
+                  bool enableVerifier, bool enableIdiomRecognizer,
+                  bool enableCIRSimplify, bool enableLibOpt,
+                  llvm::StringRef libOptOptions, bool enableCallConvLowering) {
   llvm::TimeTraceScope scope("CIR To CIR Passes");
 
   mlir::PassManager pm(&mlirContext);
   pm.addPass(mlir::createCIRCanonicalizePass());
+
+  // Snapshot AST-derived facts into CIR attributes while the ASTContext is
+  // still live, so later passes (notably LoweringPrepare) can run on
+  // serialized CIR without an AST.
+  pm.addPass(mlir::createMaterializeASTFactsPass());
 
   if (enableCIRSimplify)
     pm.addPass(mlir::createCIRSimplifyPass());
@@ -125,6 +130,11 @@ runCIRToCIRPasses(mlir::ModuleOp theModule, mlir::MLIRContext &mlirContext,
           allowsX86TargetAttrAvx(astContext), getX86ABICompatInfo(astContext)));
   }
 
+                  clang::ASTContext &astContext, cir::LowerModule &lowerModule,
+                  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs,
+                  bool enableVerifier, bool enableIdiomRecognizer,
+                  bool enableCIRSimplify, bool enableLibOpt,
+                  llvm::StringRef libOptOptions, bool enableCallConvLowering) {
   pm.enableVerifier(enableVerifier);
   (void)mlir::applyPassManagerCLOptions(pm);
   return pm.run(theModule);
