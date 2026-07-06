@@ -1,5 +1,5 @@
-// Driver pipeline for a CUDA compilation with ClangIR offload merge enabled
-// (single device arch), compiled all the way to an object.
+// Driver pipeline for a CUDA compilation with ClangIR offload merge enabled,
+// compiled all the way to an object.
 
 // REQUIRES: cir-support
 
@@ -11,8 +11,9 @@
 // Host and device translation units are first lowered to serialized CIR, then
 // combined into one cir.offload.container and split back. Each module resumes
 // the backend from -x cir: the device module is lowered to PTX, assembled by
-// ptxas, and the resulting binary is embedded into the host object. The capture
-// variables track that every file is routed to the right consumer.
+// ptxas, packaged into a CUDA fatbinary, and that fatbinary is embedded into
+// the host object. The capture variables track that every file is routed to the
+// right consumer.
 
 // Host TU -> CIR. The host compile must carry the CUDA aux-triple (i.e. present
 // as a CUDA host compile) so it sees __global__, the runtime API, etc.; the
@@ -33,6 +34,24 @@
 // MERGE: "{{.*}}fatbinary{{(\.exe)?}}"{{.*}} "--create" "[[DEV_FATBIN:[^"]+\.fatbin]]"{{.*}} "--image3=kind=elf,sm=80,file=[[DEV_CUBIN]]"
 // Host module: CIR -> object, embedding the device fatbinary.
 // MERGE: "-cc1"{{.*}} "-emit-obj"{{.*}} "-fcuda-include-gpubinary" "[[DEV_FATBIN]]"{{.*}} "-x" "cir" "[[HOST_SPLIT]]"
+
+// RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
+// RUN:   --cuda-gpu-arch=sm_60 --cuda-gpu-arch=sm_70 --cuda-gpu-arch=sm_80 \
+// RUN:   --cuda-gpu-arch=sm_90 -nocudainc -nocudalib \
+// RUN:   --clangir-offload-merge -c %s 2>&1 \
+// RUN: | FileCheck %s --check-prefix=MULTI
+
+// MULTI: "{{.*}}cir-offload-merge{{(\.exe)?}}" "-split" "-targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda-unknown-sm_60,cuda-nvptx64-nvidia-cuda-unknown-sm_70,cuda-nvptx64-nvidia-cuda-unknown-sm_80,cuda-nvptx64-nvidia-cuda-unknown-sm_90"{{.*}} "-output=[[MULTI_HOST_SPLIT:[^"]+\.cir]]" "-output=[[MULTI_DEV60_SPLIT:[^"]+\.cir]]" "-output=[[MULTI_DEV70_SPLIT:[^"]+\.cir]]" "-output=[[MULTI_DEV80_SPLIT:[^"]+\.cir]]" "-output=[[MULTI_DEV90_SPLIT:[^"]+\.cir]]"
+// MULTI: "-cc1"{{.*}} "-target-cpu" "sm_60"{{.*}} "-o" "[[MULTI_DEV60_PTX:[^"]+\.s]]"{{.*}} "-x" "cir" "[[MULTI_DEV60_SPLIT]]"
+// MULTI: "{{.*}}ptxas{{(\.exe)?}}"{{.*}} "--gpu-name" "sm_60" "--output-file" "[[MULTI_DEV60_CUBIN:[^"]+\.o]]" "[[MULTI_DEV60_PTX]]"
+// MULTI: "-cc1"{{.*}} "-target-cpu" "sm_70"{{.*}} "-o" "[[MULTI_DEV70_PTX:[^"]+\.s]]"{{.*}} "-x" "cir" "[[MULTI_DEV70_SPLIT]]"
+// MULTI: "{{.*}}ptxas{{(\.exe)?}}"{{.*}} "--gpu-name" "sm_70" "--output-file" "[[MULTI_DEV70_CUBIN:[^"]+\.o]]" "[[MULTI_DEV70_PTX]]"
+// MULTI: "-cc1"{{.*}} "-target-cpu" "sm_80"{{.*}} "-o" "[[MULTI_DEV80_PTX:[^"]+\.s]]"{{.*}} "-x" "cir" "[[MULTI_DEV80_SPLIT]]"
+// MULTI: "{{.*}}ptxas{{(\.exe)?}}"{{.*}} "--gpu-name" "sm_80" "--output-file" "[[MULTI_DEV80_CUBIN:[^"]+\.o]]" "[[MULTI_DEV80_PTX]]"
+// MULTI: "-cc1"{{.*}} "-target-cpu" "sm_90"{{.*}} "-o" "[[MULTI_DEV90_PTX:[^"]+\.s]]"{{.*}} "-x" "cir" "[[MULTI_DEV90_SPLIT]]"
+// MULTI: "{{.*}}ptxas{{(\.exe)?}}"{{.*}} "--gpu-name" "sm_90" "--output-file" "[[MULTI_DEV90_CUBIN:[^"]+\.o]]" "[[MULTI_DEV90_PTX]]"
+// MULTI: "{{.*}}fatbinary{{(\.exe)?}}"{{.*}} "--create" "[[MULTI_FATBIN:[^"]+\.fatbin]]"{{.*}} "--image3=kind=elf,sm=60,file=[[MULTI_DEV60_CUBIN]]" "--image3=kind=elf,sm=70,file=[[MULTI_DEV70_CUBIN]]" "--image3=kind=elf,sm=80,file=[[MULTI_DEV80_CUBIN]]" "--image3=kind=elf,sm=90,file=[[MULTI_DEV90_CUBIN]]"
+// MULTI: "-cc1"{{.*}} "-emit-obj"{{.*}} "-fcuda-include-gpubinary" "[[MULTI_FATBIN]]"{{.*}} "-x" "cir" "[[MULTI_HOST_SPLIT]]"
 
 // Without --clangir-offload-merge the normal pipeline runs: no merge/split.
 // RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
