@@ -4661,7 +4661,7 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
                 DeviceAction->propagateDeviceOffloadInfo(Kind, DepBoundArch,
                                                          DepTC);
 
-                // Wrap the assembled cubin into a CUDA. 
+                // Wrap the assembled cubin into a CUDA fatbinary.
                 if (Kind == Action::OFK_Cuda &&
                     isa<AssembleJobAction>(DeviceAction)) {
                   Action *Fatbin = buildCudaFatBinary(C, DeviceAction, DepTC,
@@ -5139,7 +5139,7 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
         ToolChains.push_back(TI->second);
 
       for (const ToolChain *TC : ToolChains) {
-        for (StringRef Arch : getOffloadArchs(C, C.getArgs(), Kind, *TC)) {
+        for (StringRef Arch : getOffloadArchs(C, Args, Kind, *TC)) {
           types::ID DeviceInputType =
               Kind == Action::OFK_HIP ? types::TY_HIP_DEVICE
                                       : types::TY_CUDA_DEVICE;
