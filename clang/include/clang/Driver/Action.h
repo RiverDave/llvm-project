@@ -363,6 +363,9 @@ private:
   /// The tool chains associated with the list of actions.
   DeviceDependences::ToolChainList DevToolChains;
 
+  /// The bound architectures associated with the list of actions.
+  DeviceDependences::BoundArchList DevBoundArchs;
+
 public:
   OffloadAction(const HostDependence &HDep);
   OffloadAction(const DeviceDependences &DDeps, types::ID Ty);

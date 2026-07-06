@@ -219,7 +219,8 @@ OffloadAction::OffloadAction(const HostDependence &HDep)
 
 OffloadAction::OffloadAction(const DeviceDependences &DDeps, types::ID Ty)
     : Action(OffloadClass, DDeps.getActions(), Ty),
-      DevToolChains(DDeps.getToolChains()) {
+      DevToolChains(DDeps.getToolChains()),
+      DevBoundArchs(DDeps.getBoundArchs()) {
   auto &OKinds = DDeps.getOffloadKinds();
   auto &BArchs = DDeps.getBoundArchs();
   auto &OTCs = DDeps.getToolChains();
@@ -240,7 +241,8 @@ OffloadAction::OffloadAction(const DeviceDependences &DDeps, types::ID Ty)
 OffloadAction::OffloadAction(const HostDependence &HDep,
                              const DeviceDependences &DDeps)
     : Action(OffloadClass, HDep.getAction()), HostTC(HDep.getToolChain()),
-      DevToolChains(DDeps.getToolChains()) {
+      DevToolChains(DDeps.getToolChains()),
+      DevBoundArchs(DDeps.getBoundArchs()) {
   // We use the kinds of the host dependence for this action.
   BoundArch BA = HDep.getBoundArch();
   ActiveOffloadKindMask = HDep.getOffloadKinds();
@@ -281,14 +283,17 @@ void OffloadAction::doOnEachDeviceDependence(
   // more dependence than we have device tool chains.
   assert(getInputs().size() == DevToolChains.size() + (HostTC ? 1 : 0) &&
          "Sizes of action dependences and toolchains are not consistent!");
+  assert(DevToolChains.size() == DevBoundArchs.size() &&
+         "Sizes of device toolchains and bound archs are not consistent!");
 
   // Skip host action
   if (HostTC)
     ++I;
 
   auto TI = DevToolChains.begin();
-  for (; I != E; ++I, ++TI)
-    Work(*I, *TI, (*I)->getOffloadingArch());
+  auto BI = DevBoundArchs.begin();
+  for (; I != E; ++I, ++TI, ++BI)
+    Work(*I, *TI, *BI);
 }
 
 void OffloadAction::doOnEachDependence(const OffloadActionWorkTy &Work) const {

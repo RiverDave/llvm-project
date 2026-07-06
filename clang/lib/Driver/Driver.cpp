@@ -4693,9 +4693,10 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
       if (isCIROffloadMerge(C, Args) &&
           (Phase == phases::Backend || Phase == phases::Assemble))
         if (auto *OA = dyn_cast<OffloadAction>(Current)) {
-          
-
           OffloadAction::DeviceDependences DDeps;
+          SmallVector<Action *, 4> AssembleActions;
+          SmallVector<const ToolChain *, 4> FatbinToolChains;
+          SmallVector<const char *, 4> FatbinArchs;
           OA->doOnEachDeviceDependence(
               [&](Action *DepA, const ToolChain *DepTC,
                   const char *DepBoundArch) {
@@ -4705,17 +4706,24 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
                 DeviceAction->propagateDeviceOffloadInfo(Kind, DepBoundArch,
                                                          DepTC);
 
-                // Wrap the assembled cubin into a CUDA fatbinary.
                 if (Kind == Action::OFK_Cuda &&
                     isa<AssembleJobAction>(DeviceAction)) {
-                  Action *Fatbin = buildCudaFatBinary(C, DeviceAction, DepTC,
-                                                      DepBoundArch);
-                  DDeps.add(*Fatbin, *DepTC, /*BoundArch=*/nullptr, Kind);
+                  AssembleActions.push_back(DeviceAction);
+                  FatbinToolChains.push_back(DepTC);
+                  FatbinArchs.push_back(DepBoundArch);
                   return;
                 }
 
                 DDeps.add(*DeviceAction, *DepTC, DepBoundArch, Kind);
               });
+
+          if (Action *Fatbin = buildCudaFatBinary(C, AssembleActions,
+                                                  FatbinToolChains,
+                                                  FatbinArchs))
+            // All arches share the single CUDA device toolchain; the merged
+            // fatbin is arch-agnostic, so any collected TC serves here.
+            DDeps.add(*Fatbin, *FatbinToolChains.front(),
+                      /*BoundArch=*/nullptr, Action::OFK_Cuda);
 
           Action *HostAction = OA->getHostDependence();
           HostAction = ConstructPhaseAction(C, Args, Phase, HostAction);
