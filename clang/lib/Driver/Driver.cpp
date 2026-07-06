@@ -3383,6 +3383,38 @@ static Action *buildCudaFatBinary(Compilation &C,
   return C.MakeAction<LinkJobAction>(DeviceActions, types::TY_CUDA_FATBIN);
 }
 
+// Lower each device CIR to bitcode, package the per-arch images into one
+// offload binary (llvm-offload-binary) and emit the HIP fat binary via
+// clang-linker-wrapper, matching the new offload driver (see the HIPNoRDC path
+// in BuildOffloadingActions).
+static Action *buildHipFatBinary(Compilation &C,
+                                 ArrayRef<Action *> DeviceActions,
+                                 ArrayRef<const ToolChain *> ToolChains,
+                                 ArrayRef<const char *> BoundArchs) {
+  assert(DeviceActions.size() == ToolChains.size() &&
+         DeviceActions.size() == BoundArchs.size());
+  ActionList OffloadActions;
+  for (unsigned I = 0, E = DeviceActions.size(); I != E; ++I) {
+    Action *Bitcode =
+        C.MakeAction<BackendJobAction>(DeviceActions[I], types::TY_LLVM_BC);
+    Bitcode->propagateDeviceOffloadInfo(Action::OFK_HIP, BoundArchs[I],
+                                        ToolChains[I]);
+    // Wrap with the arch + toolchain so the packager records the per-image
+    // triple/arch/kind.
+    OffloadAction::DeviceDependences DDep;
+    DDep.add(*Bitcode, *ToolChains[I], BoundArchs[I], Action::OFK_HIP);
+    OffloadActions.push_back(
+        C.MakeAction<OffloadAction>(DDep, types::TY_LLVM_BC));
+  }
+  if (OffloadActions.empty())
+    return nullptr;
+  Action *Packager =
+      C.MakeAction<OffloadPackagerJobAction>(OffloadActions, types::TY_Image);
+  ActionList WrapperInput{Packager};
+  return C.MakeAction<LinkerWrapperJobAction>(WrapperInput,
+                                              types::TY_HIP_FATBIN);
+}
+
 namespace {
 /// Provides a convenient interface for different programming models to generate
 /// the required device actions.
@@ -4694,13 +4726,30 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
           (Phase == phases::Backend || Phase == phases::Assemble))
         if (auto *OA = dyn_cast<OffloadAction>(Current)) {
           OffloadAction::DeviceDependences DDeps;
-          SmallVector<Action *, 4> AssembleActions;
-          SmallVector<const ToolChain *, 4> FatbinToolChains;
-          SmallVector<const char *, 4> FatbinArchs;
+          // CUDA and HIP are mutually exclusive, so one set of per-arch device
+          // inputs serves whichever fatbin builder applies. The collected
+          // element differs by kind: a cubin AssembleJobAction for CUDA, the
+          // device CIR for HIP.
+          SmallVector<Action *, 4> DeviceActions;
+          SmallVector<const ToolChain *, 4> DeviceToolChains;
+          SmallVector<const char *, 4> DeviceArchs;
+          Action::OffloadKind FatbinKind = Action::OFK_None;
           OA->doOnEachDeviceDependence(
               [&](Action *DepA, const ToolChain *DepTC,
                   const char *DepBoundArch) {
                 Action::OffloadKind Kind = DepA->getOffloadingDeviceKind();
+
+                // HIP packages the device CIR at the backend phase; the
+                // resulting fat binary passes through the assemble phase
+                // untouched (it is not TY_PP_Asm).
+                if (Kind == Action::OFK_HIP && Phase == phases::Backend) {
+                  FatbinKind = Kind;
+                  DeviceActions.push_back(DepA);
+                  DeviceToolChains.push_back(DepTC);
+                  DeviceArchs.push_back(DepBoundArch);
+                  return;
+                }
+
                 Action *DeviceAction =
                     ConstructPhaseAction(C, Args, Phase, DepA, Kind);
                 DeviceAction->propagateDeviceOffloadInfo(Kind, DepBoundArch,
@@ -4708,22 +4757,28 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
 
                 if (Kind == Action::OFK_Cuda &&
                     isa<AssembleJobAction>(DeviceAction)) {
-                  AssembleActions.push_back(DeviceAction);
-                  FatbinToolChains.push_back(DepTC);
-                  FatbinArchs.push_back(DepBoundArch);
+                  FatbinKind = Kind;
+                  DeviceActions.push_back(DeviceAction);
+                  DeviceToolChains.push_back(DepTC);
+                  DeviceArchs.push_back(DepBoundArch);
                   return;
                 }
 
                 DDeps.add(*DeviceAction, *DepTC, DepBoundArch, Kind);
               });
 
-          if (Action *Fatbin = buildCudaFatBinary(C, AssembleActions,
-                                                  FatbinToolChains,
-                                                  FatbinArchs))
-            // All arches share the single CUDA device toolchain; the merged
-            // fatbin is arch-agnostic, so any collected TC serves here.
-            DDeps.add(*Fatbin, *FatbinToolChains.front(),
-                      /*BoundArch=*/nullptr, Action::OFK_Cuda);
+          Action *Fatbin = nullptr;
+          if (FatbinKind == Action::OFK_Cuda)
+            Fatbin = buildCudaFatBinary(C, DeviceActions, DeviceToolChains,
+                                        DeviceArchs);
+          else if (FatbinKind == Action::OFK_HIP)
+            Fatbin = buildHipFatBinary(C, DeviceActions, DeviceToolChains,
+                                       DeviceArchs);
+          // All arches share the single device toolchain of their kind; the
+          // merged fatbin is arch-agnostic, so any collected TC serves here.
+          if (Fatbin)
+            DDeps.add(*Fatbin, *DeviceToolChains.front(),
+                      /*BoundArch=*/nullptr, FatbinKind);
 
           Action *HostAction = OA->getHostDependence();
           HostAction = ConstructPhaseAction(C, Args, Phase, HostAction);
@@ -5170,11 +5225,6 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
   if (isCIROffloadMerge(C, Args) && !Args.hasArg(options::OPT_emit_cir) &&
       isa<CompileJobAction>(HostAction) &&
       HostAction->getType() == types::TY_CIR) {
-    // TODO: HIP needs the device fatbin bundling step before the host embed;
-    // wired up in a follow-up. Until then only CUDA is supported here.
-    assert(!C.isOffloadingHostKind(Action::OFK_HIP) &&
-           "ClangIR offload merge for HIP is NYI");
-
     ActionList MergeInputs;
     MergeInputs.push_back(HostAction);
 
