@@ -1,0 +1,45 @@
+// Resume a HIP host .cir module and check that the registration pass emits the
+// HIP runtime calls (not CUDA's). The .cir resume path has no HIP language flag
+// on the cc1 line, so HIP is recovered from the aux-triple (amdgcn).
+
+// Create a dummy GPU binary file for registration.
+// RUN: echo -n "GPU binary would be here." > %t.fatbin
+
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -aux-triple amdgcn-amd-amdhsa \
+// RUN:   -x cir -emit-cir -fcuda-include-gpubinary %t.fatbin %s -o - \
+// RUN:   | FileCheck %s --check-prefix=ATTR
+
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -aux-triple amdgcn-amd-amdhsa \
+// RUN:   -x cir -emit-llvm -fcuda-include-gpubinary %t.fatbin %s -o - \
+// RUN:   | FileCheck %s --check-prefix=LLVM
+
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -aux-triple amdgcn-amd-amdhsa \
+// RUN:   -x cir -emit-llvm %s -o - | FileCheck %s --check-prefix=NOFATBIN
+
+module {
+  cir.global external @_Z6kernelv = #cir.ptr<null> : !cir.ptr<!cir.func<()>>
+  cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
+    cir.return
+  }
+}
+
+// ATTR: cir.cu.binary_handle = #cir.cu.binary_handle<"{{.*}}.fatbin">
+
+// LLVM: @__hip_fatbin_str = private constant
+// LLVM-SAME: section ".hip_fatbin"
+// LLVM: @__hip_fatbin_wrapper = {{.*}}constant
+// LLVM-SAME: section ".hipFatBinSegment"
+// LLVM: @__hip_gpubin_handle
+// LLVM: @llvm.global_ctors = appending global
+// LLVM-SAME: @__hip_module_ctor
+// LLVM: define internal void @__hip_register_globals
+// LLVM: call{{.*}}@__hipRegisterFunction
+// LLVM: define internal void @__hip_module_ctor
+// LLVM: call{{.*}}@__hipRegisterFatBinary
+// LLVM: call void @__hip_register_globals
+
+// NOFATBIN-NOT: __hip_fatbin
+// NOFATBIN-NOT: __hipRegisterFatBinary
+// NOFATBIN-NOT: __hipRegisterFunction
+// NOFATBIN-NOT: __hip_register_globals
+// NOFATBIN-NOT: __hip_module_ctor
