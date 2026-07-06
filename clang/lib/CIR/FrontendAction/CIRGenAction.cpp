@@ -176,8 +176,14 @@ makeLowerModuleFromInvocation(CompilerInstance &CI, mlir::ModuleOp module) {
   // even for HIP. Recover the device flavor from the aux-triple (amdgcn for HIP)
   // so the registration pass emits the HIP runtime calls instead of CUDA's.
   clang::LangOptions langOpts = CI.getLangOpts();
-  if (!langOpts.HIP && !CI.getFrontendOpts().AuxTriple.empty() &&
-      llvm::Triple(CI.getFrontendOpts().AuxTriple).isAMDGPU())
+  bool auxIsAMDGPU = !CI.getFrontendOpts().AuxTriple.empty() &&
+                     llvm::Triple(CI.getFrontendOpts().AuxTriple).isAMDGPU();
+  bool otherAMDGPUOffload =
+      langOpts.OpenMP || langOpts.SYCLIsDevice || langOpts.SYCLIsHost;
+  assert(!(otherAMDGPUOffload && auxIsAMDGPU) &&
+         "non-HIP AMDGPU offload (OpenMP/SYCL) is not supported on the .cir "
+         "resume path");
+  if (!langOpts.HIP && auxIsAMDGPU)
     langOpts.HIP = true;
   return cir::createLowerModule(module, langOpts, CI.getCodeGenOpts(),
                                 std::move(target));
