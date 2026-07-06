@@ -4676,8 +4676,9 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
           if (Action *Fatbin = buildCudaFatBinary(C, AssembleActions,
                                                   FatbinToolChains,
                                                   FatbinArchs))
-            DDeps.add(*Fatbin,
-                      *C.getSingleOffloadToolChain<Action::OFK_Cuda>(),
+            // All arches share the single CUDA device toolchain; the merged
+            // fatbin is arch-agnostic, so any collected TC serves here.
+            DDeps.add(*Fatbin, *FatbinToolChains.front(),
                       /*BoundArch=*/nullptr, Action::OFK_Cuda);
 
           Action *HostAction = OA->getHostDependence();
