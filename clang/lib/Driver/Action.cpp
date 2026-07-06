@@ -68,6 +68,16 @@ void Action::propagateDeviceOffloadInfo(OffloadKind OKind, BoundArch OArch,
   // Offload action set its own kinds on their dependences.
   if (Kind == OffloadClass)
     return;
+  // Merge/split mix host and device inputs; stamp the node itself but do not
+  // recurse, so device info never bleeds into the host CIR compile.
+  if (Kind == CIRSplitJobClass || Kind == CIRMergeJobClass) {
+    assert((OffloadingDeviceKind == OKind || OffloadingDeviceKind == OFK_None) &&
+           "Setting device kind to a different device??");
+    OffloadingDeviceKind = OKind;
+    OffloadingArch = OArch;
+    OffloadingToolChain = OToolChain;
+    return;
+  }
   // Unbundling actions use the host kinds.
   if (Kind == OffloadUnbundlingJobClass)
     return;
@@ -86,6 +96,8 @@ void Action::propagateDeviceOffloadInfo(OffloadKind OKind, BoundArch OArch,
 void Action::propagateHostOffloadInfo(unsigned OKinds, BoundArch OArch) {
   // Offload action set its own kinds on their dependences.
   if (Kind == OffloadClass)
+    return;
+  if (Kind == CIRSplitJobClass)
     return;
 
   assert(OffloadingDeviceKind == OFK_None &&
