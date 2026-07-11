@@ -21,6 +21,7 @@ endif()
 
 add_clang_tool(cir-opt
   cir-opt.cpp
+  TestKernelBindings.cpp
 )
 
 if(CLANG_INCLUDE_TESTS)
@@ -33,6 +34,7 @@ clang_target_link_libraries(cir-opt
   clangCIRLoweringDirectToLLVM
   CIRRegisterAllDialects
   MLIRCIR
+  MLIRCIROffloadOpt
   MLIRCIRTransforms
   ${cir_opt_test_libs}
 )
