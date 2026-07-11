@@ -39,6 +39,12 @@ struct CIRToLLVMPipelineOptions
       llvm::cl::init(false)};
 };
 
+namespace cir {
+namespace test {
+void registerPrintKernelBindingsPass();
+} // namespace test
+} // namespace cir
+
 int main(int argc, char **argv) {
   // TODO: register needed MLIR passes for CIR?
   mlir::DialectRegistry registry;
@@ -101,6 +107,8 @@ int main(int argc, char **argv) {
   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
     return mlir::createLoweringPreparePass();
   });
+
+  cir::test::registerPrintKernelBindingsPass();
 
   mlir::omp::registerOpenMPPasses();
   mlir::registerTransformsPasses();

@@ -1,4 +1,5 @@
 add_subdirectory(TargetLowering)
+add_subdirectory(OffloadOpt)
 
 add_clang_library(MLIRCIRTransforms
   CallConvLoweringPass.cpp

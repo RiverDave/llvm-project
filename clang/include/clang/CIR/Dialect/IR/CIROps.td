@@ -6308,7 +6308,8 @@ def CIR_OffloadKindAttr : CIR_EnumAttr<CIR_OffloadKind, "offload_kind"> {
 //===----------------------------------------------------------------------===//
 
 def CIR_OffloadContainerOp : CIR_Op<"offload.container", [
-    NoRegionArguments, NoTerminator, SingleBlock, SymbolTable]> {
+    IsolatedFromAbove, NoRegionArguments, NoTerminator, SingleBlock,
+    SymbolTable]> {
   let summary = "Container for host and device CIR modules";
   let description = [{
     `cir.offload.container` groups one host CIR module with one or more device

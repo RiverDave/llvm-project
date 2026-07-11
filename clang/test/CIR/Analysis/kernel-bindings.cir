@@ -1,0 +1,73 @@
+// RUN: cir-opt %s -split-input-file \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(test-print-kernel-bindings))" \
+// RUN:   2>&1 | FileCheck %s
+
+// One host stub resolving to one device kernel.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func @_Z20__device_stub__scalePff() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z5scalePff">} {
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @_Z5scalePff() {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK: KernelBindingTable
+// CHECK-NEXT: kernel _Z5scalePff
+// CHECK-NEXT: host-stub @_Z20__device_stub__scalePff
+// CHECK-NEXT: device @device_0 : @_Z5scalePff
+
+// -----
+
+// Same kernel present in two device modules (multi-arch).
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func @_Z20__device_stub__scalePff() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z5scalePff">} {
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @_Z5scalePff() {
+        cir.return
+      }
+    }
+    builtin.module @device_1 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @_Z5scalePff() {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK: KernelBindingTable
+// CHECK-NEXT: kernel _Z5scalePff
+// CHECK-NEXT: host-stub @_Z20__device_stub__scalePff
+// CHECK-NEXT: device @device_0 : @_Z5scalePff
+// CHECK-NEXT: device @device_1 : @_Z5scalePff
+
+// -----
+
+// Host stub whose kernel is absent from every device module.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func @_Z19__device_stub__deadv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z4deadv">} {
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+    }
+  }
+}
+
+// CHECK: KernelBindingTable
+// CHECK-NEXT: kernel _Z4deadv
+// CHECK-NEXT: host-stub @_Z19__device_stub__deadv
+// CHECK-NEXT: <no device kernel>
