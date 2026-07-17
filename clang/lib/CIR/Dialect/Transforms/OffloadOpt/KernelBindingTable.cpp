@@ -23,6 +23,8 @@ KernelBindingTable::KernelBindingTable(mlir::Operation *container) {
     auto kernelNameAttr = hostFn->getAttrOfType<cir::CUDAKernelNameAttr>(
         cir::CUDAKernelNameAttr::getMnemonic());
     if (kernelNameAttr) {
+      assert(!lookup(kernelNameAttr.getKernelName()) &&
+             "Duplicate stub found for Host TU");
       bindings[kernelNameAttr.getKernelName()].hostStub = hostFn;
     }
   });
@@ -37,20 +39,32 @@ KernelBindingTable::KernelBindingTable(mlir::Operation *container) {
   }
 }
 
-const KernelBinding *KernelBindingTable::lookup(llvm::StringRef name) const {
-  auto it = bindings.find(name);
+const KernelBinding *KernelBindingTable::lookup(llvm::StringRef kernelName) const {
+  auto it = bindings.find(kernelName);
   return it == bindings.end() ? nullptr : &it->second;
+}
+
+llvm::ArrayRef<cir::FuncOp>
+KernelBindingTable::getDeviceFuncs(cir::FuncOp hostFn) const {
+  auto kernelNameAttr = hostFn->getAttrOfType<cir::CUDAKernelNameAttr>(
+      cir::CUDAKernelNameAttr::getMnemonic());
+  if (!kernelNameAttr)
+    return {};
+  const KernelBinding *binding = lookup(kernelNameAttr.getKernelName());
+  return binding ? binding->deviceKernels : llvm::ArrayRef<cir::FuncOp>{};
 }
 
 void KernelBindingTable::print(llvm::raw_ostream &os) const {
   os << "// ---- KernelBindingTable ----\n";
-  for (const auto &b : bindings) {
-    cir::FuncOp stub = b.second.hostStub;
-    os << "// - kernel " << b.first << "\n";
+  os << "// size " << size() << " empty " << (empty() ? "true" : "false")
+     << "\n";
+  for (const auto &binding : bindings) {
+    cir::FuncOp stub = binding.second.hostStub;
+    os << "// - kernel " << binding.first << "\n";
     os << "//   host-stub @" << stub.getName() << "\n";
-    if (b.second.deviceKernels.empty())
+    if (binding.second.deviceKernels.empty())
       os << "//   <no device kernel>\n";
-    for (cir::FuncOp kernel : b.second.deviceKernels) {
+    for (cir::FuncOp kernel : binding.second.deviceKernels) {
       auto mod = kernel->getParentOfType<mlir::ModuleOp>();
       os << "//   device @" << mod.getSymName().value_or("<unnamed>") << " : @"
          << kernel.getName() << "\n";
