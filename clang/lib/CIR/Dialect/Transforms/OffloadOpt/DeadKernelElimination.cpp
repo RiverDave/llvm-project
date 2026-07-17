@@ -50,7 +50,7 @@ struct OffloadDeadKernelEliminationPass
 
 void OffloadDeadKernelEliminationPass::runOnOperation() {
   cir::OffloadContainerOp container = getOperation();
-  cir::KernelBindingTable table(container);
+  cir::KernelBindingTable &table = getAnalysis<cir::KernelBindingTable>();
   mlir::ModuleOp hostModule = container.getHostModule();
 
   llvm::SmallVector<cir::FuncOp> toErase;
@@ -82,6 +82,12 @@ void OffloadDeadKernelEliminationPass::runOnOperation() {
       if (!hasUseOutsideSelf(fn, deviceMod))
         toErase.push_back(fn);
     });
+  }
+
+  // Cache binding table if nothing was deleted.
+  if (toErase.empty()) {
+    markAllAnalysesPreserved();
+    return;
   }
 
   for (cir::FuncOp fn : toErase)
