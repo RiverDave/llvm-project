@@ -42,6 +42,12 @@ public:
   explicit KernelBindingTable(mlir::Operation *container);
 
   const KernelBinding *lookup(llvm::StringRef kernelName) const;
+
+  // Device kernels bound to a host stub. The stub carries the `cu.kernel_name`
+  // key itself, so a pass holding a launch callee can resolve device kernels
+  // without re-deriving the mangled name. Empty if the func is not a stub.
+  llvm::ArrayRef<cir::FuncOp> getDeviceFuncs(cir::FuncOp hostFn) const;
+
   bool empty() const { return bindings.empty(); }
   size_t size() const { return bindings.size(); }
   auto begin() const { return bindings.begin(); }
@@ -50,6 +56,8 @@ public:
   void print(llvm::raw_ostream &os) const;
 
 private:
+  // Keys are StringRefs into the `cu.kernel_name` attribute storage, so the
+  // table's lifetime is tied to the container IR it was built from.
   llvm::MapVector<llvm::StringRef, KernelBinding> bindings;
 };
 
