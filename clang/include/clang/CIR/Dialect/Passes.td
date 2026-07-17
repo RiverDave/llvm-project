@@ -232,6 +232,10 @@ def OffloadDeadKernelElimination
 
     Externally-linked kernels are always preserved: another TU may launch them
     through their external host stub. Scoped to the non-RDC pipeline.
+
+    Dynamic parallelism follows NVIDIA's terminology: kernel A launches kernel B
+    from device code, so B has no host stub -- yet B is live and must be kept.
+    https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/dynamic-parallelism.html
   }];
   let constructor = "mlir::createOffloadDeadKernelEliminationPass()";
   let dependentDialects = ["cir::CIRDialect"];
