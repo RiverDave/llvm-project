@@ -313,10 +313,8 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
 }
 
 // Run the offload-container optimization passes on the freshly combined module.
-// This is the pipeline seam where cross-boundary opts (DKE, and later const
-// prop) run while host and device modules are still joined in one container.
-// They run by default so the driver need only invoke -combine, with no per-pass
-// flags to thread through the offload actions.
+// This is the pipeline seam where cross-boundary opts (DKE, and other passes)
+// run while host and device modules are still joined in one container.
 int runOffloadOptPasses(mlir::ModuleOp module) {
   mlir::PassManager pm(module.getContext(), mlir::ModuleOp::getOperationName());
   pm.nest<cir::OffloadContainerOp>().addPass(
