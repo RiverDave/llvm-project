@@ -24,11 +24,13 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 #include "clang/Basic/TargetID.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/OpenMP/RegisterOpenMPExtensions.h"
+#include "clang/CIR/Dialect/Passes.h"
 #include "clang/Driver/OffloadBundler.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -310,6 +312,21 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
   return combinedModule;
 }
 
+// Run the offload-container optimization passes on the freshly combined module.
+// This is the pipeline seam where cross-boundary opts (DKE, and later const
+// prop) run while host and device modules are still joined in one container.
+// They run by default so the driver need only invoke -combine, with no per-pass
+// flags to thread through the offload actions.
+int runOffloadOptPasses(mlir::ModuleOp module) {
+  mlir::PassManager pm(module.getContext(), mlir::ModuleOp::getOperationName());
+  pm.nest<cir::OffloadContainerOp>().addPass(
+      mlir::createOffloadDeadKernelEliminationPass());
+
+  if (mlir::failed(pm.run(module)))
+    return reportError("offload-container passes failed");
+  return 0;
+}
+
 int writeModuleToOutput(mlir::ModuleOp module, llvm::StringRef outputFileName) {
   std::string errorMessage;
   std::unique_ptr<llvm::ToolOutputFile> outputFile =
@@ -426,6 +443,9 @@ int main(int argc, char **argv) {
 
     if (mlir::failed(mlir::verify(*combinedModule)))
       return reportError("failed to verify combined module");
+
+    if (int errorCode = runOffloadOptPasses(*combinedModule))
+      return errorCode;
 
     return writeModuleToOutput(*combinedModule, OutputFileNames.front());
   }

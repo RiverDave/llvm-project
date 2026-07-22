@@ -13,6 +13,7 @@ clang_target_link_libraries(cir-offload-merge
   clangDriver
   CIROpenMPSupport
   MLIRCIR
+  MLIRCIROffloadOpt
 )
 
 target_link_libraries(cir-offload-merge
@@ -20,5 +21,6 @@ target_link_libraries(cir-offload-merge
   ${dialect_libs}
   MLIRIR
   MLIRParser
+  MLIRPass
   MLIRSupport
 )
