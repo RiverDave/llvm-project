@@ -213,6 +213,34 @@ def MaterializeASTFacts : Pass<"cir-materialize-ast-facts", "mlir::ModuleOp"> {
   let dependentDialects = ["cir::CIRDialect"];
 }
 
+def OffloadDeadKernelElimination
+    : Pass<"cir-offload-dead-kernel-elimination", "cir::OffloadContainerOp"> {
+  let summary = "Remove device kernels that can never be launched";
+  let description = [{
+    Runs over a `cir.offload.container` and deletes device kernels that are
+    provably unreachable, using the host<->device correspondence from
+    `KernelBindingTable`.
+
+    A kernel is removed when it is not launchable outside this container:
+
+      - a host stub with internal linkage and no launch left (its device
+        kernels die with it), or
+      - a device kernel with no host stub at all -- a static/anonymous kernel
+        never launched in this TU, since an externally-linked kernel always
+        emits an external stub -- provided device code does not still
+        reference it (dynamic parallelism / address-taken).
+
+    Externally-linked kernels are always preserved: another TU may launch them
+    through their external host stub. Scoped to the non-RDC pipeline.
+
+    Dynamic parallelism follows NVIDIA's terminology: kernel A launches kernel B
+    from device code, so B has no host stub -- yet B is live and must be kept.
+    https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/dynamic-parallelism.html
+  }];
+  let constructor = "mlir::createOffloadDeadKernelEliminationPass()";
+  let dependentDialects = ["cir::CIRDialect"];
+}
+
 def IdiomRecognizer : Pass<"cir-idiom-recognizer", "mlir::ModuleOp"> {
   let summary = "Raise calls to C/C++ libraries to CIR operations";
   let description = [{

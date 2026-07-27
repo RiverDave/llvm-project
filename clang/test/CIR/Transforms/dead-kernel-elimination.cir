@@ -1,0 +1,96 @@
+// RUN: cir-opt %s -split-input-file \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-dead-kernel-elimination))" \
+// RUN:   | FileCheck %s
+
+// External kernel, launched: stub and device kernel preserved.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func @_Z18__device_stub__extv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z3extv">} {
+        cir.call @_Z18__device_stub__extv() : () -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @_Z3extv() cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.offload.container
+// CHECK: cir.func @_Z18__device_stub__extv
+// CHECK: cir.func @_Z3extv() cc(ptx_kernel)
+
+// -----
+
+// External kernel, never launched: stub is external, so kept (may escape to
+// another TU); device kernel kept with it.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func @_Z25__device_stub__ext_unusedv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z10ext_unusedv">} {
+        cir.call @_Z25__device_stub__ext_unusedv() : () -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @_Z10ext_unusedv() cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.offload.container
+// CHECK: cir.func @_Z25__device_stub__ext_unusedv
+// CHECK: cir.func @_Z10ext_unusedv() cc(ptx_kernel)
+
+// -----
+
+// Static kernel, never launched: no host stub emitted, only a device kernel.
+// Deleted device-side.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func comdat @_ZL9st_unusedv() cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.offload.container
+// CHECK-NOT: _ZL9st_unusedv
+
+// -----
+
+// Static kernel with no host stub but referenced from device code of a live
+// (launched) kernel -- dynamic parallelism: kept via its device-side use.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func @_Z21__device_stub__parentv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6parentv">} {
+        cir.call @_Z21__device_stub__parentv() : () -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func comdat @_ZL5childv() cc(ptx_kernel) {
+        cir.return
+      }
+      cir.func @_Z6parentv() cc(ptx_kernel) {
+        %0 = cir.get_global @_ZL5childv : !cir.ptr<!cir.func<()>>
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.offload.container
+// CHECK: cir.func @_Z21__device_stub__parentv
+// CHECK: cir.func comdat @_ZL5childv() cc(ptx_kernel)
+// CHECK: cir.func @_Z6parentv() cc(ptx_kernel)
