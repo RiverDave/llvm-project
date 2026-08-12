@@ -36,9 +36,7 @@ namespace cir {
 // recoverable via k->getParentOfType<mlir::ModuleOp>().
 //
 // `launchSites` are the host calls to `hostStub`, which carry the same
-// `cu.kernel_name` key as the stub itself. A site holds the kernel arguments,
-// not the launch configuration: grid and block dimensions are operands of the
-// `__cudaPushCallConfiguration` call preceding it.
+// `cu.kernel_name` key as the stub itself. 
 struct KernelBinding {
   cir::FuncOp hostStub;
   llvm::SmallVector<cir::FuncOp, 2> deviceKernels;
