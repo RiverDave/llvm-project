@@ -27,6 +27,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Transforms/Passes.h"
 #include "clang/Basic/TargetID.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/OpenMP/RegisterOpenMPExtensions.h"
@@ -317,8 +318,16 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
 // run while host and device modules are still joined in one container.
 int runOffloadOptPasses(mlir::ModuleOp module) {
   mlir::PassManager pm(module.getContext(), mlir::ModuleOp::getOperationName());
-  pm.nest<cir::OffloadContainerOp>().addPass(
-      mlir::createOffloadDeadKernelEliminationPass());
+  mlir::OpPassManager &containerPM = pm.nest<cir::OffloadContainerOp>();
+
+  // Promote stack slots and propagate constants so that a kernel argument known
+  // at compile time reaches the device stub call site as a cir.const. Runs on
+  // every nested module, host and device.
+  mlir::OpPassManager &modulePM = containerPM.nest<mlir::ModuleOp>();
+  modulePM.addPass(mlir::createMem2Reg());
+  modulePM.addPass(mlir::createSCCPPass());
+
+  containerPM.addPass(mlir::createOffloadDeadKernelEliminationPass());
 
   if (mlir::failed(pm.run(module)))
     return reportError("offload-container passes failed");
