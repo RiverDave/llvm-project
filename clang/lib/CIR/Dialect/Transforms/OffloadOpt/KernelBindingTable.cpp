@@ -29,6 +29,15 @@ KernelBindingTable::KernelBindingTable(mlir::Operation *container) {
     }
   });
 
+  // Walked after the stubs so the duplicate-stub assertion above sees only
+  // entries created by a stub.
+  hostModule.walk([&](cir::CallOp call) {
+    auto kernelNameAttr = call->getAttrOfType<cir::CUDAKernelNameAttr>(
+        cir::CUDAKernelNameAttr::getMnemonic());
+    if (kernelNameAttr)
+      bindings[kernelNameAttr.getKernelName()].launchSites.push_back(call);
+  });
+
   for (mlir::ModuleOp deviceMod : containerOp.getDeviceModules()) {
     for (auto &binding : bindings) {
       if (cir::FuncOp kernel = llvm::dyn_cast_if_present<cir::FuncOp>(
@@ -54,6 +63,12 @@ KernelBindingTable::getDeviceFuncs(cir::FuncOp hostFn) const {
   return binding ? binding->deviceKernels : llvm::ArrayRef<cir::FuncOp>{};
 }
 
+llvm::ArrayRef<cir::CallOp>
+KernelBindingTable::getLaunchSites(llvm::StringRef kernelName) const {
+  const KernelBinding *binding = lookup(kernelName);
+  return binding ? binding->launchSites : llvm::ArrayRef<cir::CallOp>{};
+}
+
 void KernelBindingTable::print(llvm::raw_ostream &os) const {
   os << "// ---- KernelBindingTable ----\n";
   os << "// size " << size() << " empty " << (empty() ? "true" : "false")
@@ -68,6 +83,13 @@ void KernelBindingTable::print(llvm::raw_ostream &os) const {
       auto mod = kernel->getParentOfType<mlir::ModuleOp>();
       os << "//   device @" << mod.getSymName().value_or("<unnamed>") << " : @"
          << kernel.getName() << "\n";
+    }
+    if (binding.second.launchSites.empty())
+      os << "//   <no launch site>\n";
+    for (cir::CallOp launch : binding.second.launchSites) {
+      auto caller = launch->getParentOfType<cir::FuncOp>();
+      os << "//   launch in @" << caller.getName() << " : "
+         << launch.getNumArgOperands() << " args\n";
     }
     os << "//\n";
   }

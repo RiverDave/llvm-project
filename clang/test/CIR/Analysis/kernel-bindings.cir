@@ -23,6 +23,7 @@ module {
 // CHECK-NEXT: kernel _Z5scalePff
 // CHECK-NEXT: host-stub @_Z20__device_stub__scalePff
 // CHECK-NEXT: device @device_0 : @_Z5scalePff
+// CHECK-NEXT: <no launch site>
 
 // -----
 
@@ -53,6 +54,7 @@ module {
 // CHECK-NEXT: host-stub @_Z20__device_stub__scalePff
 // CHECK-NEXT: device @device_0 : @_Z5scalePff
 // CHECK-NEXT: device @device_1 : @_Z5scalePff
+// CHECK-NEXT: <no launch site>
 
 // -----
 
@@ -74,6 +76,7 @@ module {
 // CHECK-NEXT: kernel _Z4deadv
 // CHECK-NEXT: host-stub @_Z19__device_stub__deadv
 // CHECK-NEXT: <no device kernel>
+// CHECK-NEXT: <no launch site>
 
 // -----
 
@@ -96,3 +99,39 @@ module {
 
 // CHECK: KernelBindingTable
 // CHECK-NEXT: size 0 empty true
+
+// -----
+
+// Two launches of the same kernel, from different host functions.
+!s32i = !cir.int<s, 32>
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func @_Z18__device_stub__bari(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z3bari">} {
+        cir.return
+      }
+      cir.func @launch_a() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @_Z18__device_stub__bari(%0) {cu.kernel_name = #cir.cu.kernel_name<"_Z3bari">} : (!s32i) -> ()
+        cir.return
+      }
+      cir.func @launch_b(%arg0: !s32i) {
+        cir.call @_Z18__device_stub__bari(%arg0) {cu.kernel_name = #cir.cu.kernel_name<"_Z3bari">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @_Z3bari(%arg0: !s32i) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK: KernelBindingTable
+// CHECK-NEXT: size 1 empty false
+// CHECK-NEXT: kernel _Z3bari
+// CHECK-NEXT: host-stub @_Z18__device_stub__bari
+// CHECK-NEXT: device @device_0 : @_Z3bari
+// CHECK-NEXT: launch in @launch_a : 1 args
+// CHECK-NEXT: launch in @launch_b : 1 args

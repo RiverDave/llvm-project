@@ -7,8 +7,10 @@
 //===----------------------------------------------------------------------===//
 //
 // Resolves the host device-stub <-> device kernel correspondence inside a
-// cir.offload.container. The bridge is the `cu.kernel_name` attribute carried
-// by each host stub, whose value is the device kernel's mangled symbol name.
+// cir.offload.container, along with the host call sites that launch each
+// kernel. The bridge is the `cu.kernel_name` attribute, whose value is the
+// device kernel's mangled symbol name; both the host stub and the calls to it
+// carry it.
 //
 // Usable as an MLIR analysis: getAnalysis<KernelBindingTable>() on a pass
 // anchored at a cir.offload.container.
@@ -32,9 +34,13 @@ namespace cir {
 // Binding for one kernel, keyed by its device mangled name. A name may resolve
 // in several device modules (multi-arch); the owning module of each kernel is
 // recoverable via k->getParentOfType<mlir::ModuleOp>().
+//
+// `launchSites` are the host calls to `hostStub`, which carry the same
+// `cu.kernel_name` key as the stub itself. 
 struct KernelBinding {
   cir::FuncOp hostStub;
   llvm::SmallVector<cir::FuncOp, 2> deviceKernels;
+  llvm::SmallVector<cir::CallOp, 2> launchSites;
 };
 
 class KernelBindingTable {
@@ -47,6 +53,10 @@ public:
   // key itself, so a pass holding a launch callee can resolve device kernels
   // without re-deriving the mangled name. Empty if the func is not a stub.
   llvm::ArrayRef<cir::FuncOp> getDeviceFuncs(cir::FuncOp hostFn) const;
+
+  // Host calls launching the named kernel. Empty if the name is unbound or the
+  // kernel is never launched in this TU.
+  llvm::ArrayRef<cir::CallOp> getLaunchSites(llvm::StringRef kernelName) const;
 
   bool empty() const { return bindings.empty(); }
   size_t size() const { return bindings.size(); }
