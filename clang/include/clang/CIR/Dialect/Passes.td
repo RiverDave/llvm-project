@@ -320,4 +320,30 @@ def CallConvLowering : Pass<"cir-call-conv-lowering", "mlir::ModuleOp"> {
   ];
 }
 
+def OffloadKernelArgConstantPropagation
+    : Pass<"cir-offload-kernel-arg-const-prop", "cir::OffloadContainerOp"> {
+  let summary = "Propagate constant launch arguments into device kernels";
+  let description = [{
+    Runs over a `cir.offload.container`. When every launch of a kernel passes
+    the same constant for a given argument, the uses of that argument inside
+    the device kernel are replaced by the constant.
+
+    Only device code is rewritten. The kernel signature, the host argument
+    buffer and the registration of the kernel are all left alone, so the
+    argument simply becomes unused on the device side.
+
+    The rewrite requires every launch to be visible. That holds when the host
+    stub has internal linkage, so no other TU can call it, and every reference
+    to the stub outside its own body is a direct call: a stub whose address
+    escapes may be called indirectly with arguments this pass cannot see. The
+    stub always references itself, since it passes its own address to
+    `cudaLaunchKernel`.
+
+    Requires the launch arguments to already be constants at the call site,
+    which for anything but a literal means `mem2reg` and `sccp` have run.
+  }];
+  let constructor = "mlir::createOffloadKernelArgConstantPropagationPass()";
+  let dependentDialects = ["cir::CIRDialect"];
+}
+
 #endif // CLANG_CIR_DIALECT_PASSES_TD
