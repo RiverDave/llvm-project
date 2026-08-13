@@ -23,4 +23,5 @@ target_link_libraries(cir-offload-merge
   MLIRParser
   MLIRPass
   MLIRSupport
+  MLIRTransforms
 )
