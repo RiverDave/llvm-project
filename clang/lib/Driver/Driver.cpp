@@ -3374,7 +3374,7 @@ static Action *buildCudaFatBinary(Compilation &C,
     assert(Backend->getType() == types::TY_PP_Asm);
     for (Action *A : {Assemble, Backend}) {
       OffloadAction::DeviceDependences DDep;
-      DDep.add(*A, *ToolChains[I], BoundArchs[I], Action::OFK_Cuda);
+      DDep.add(*A, *ToolChains[I], BoundArch(BoundArchs[I]), Action::OFK_Cuda);
       DeviceActions.push_back(C.MakeAction<OffloadAction>(DDep, A->getType()));
     }
   }
@@ -3397,12 +3397,12 @@ static Action *buildHipFatBinary(Compilation &C,
   for (unsigned I = 0, E = DeviceActions.size(); I != E; ++I) {
     Action *Bitcode =
         C.MakeAction<BackendJobAction>(DeviceActions[I], types::TY_LLVM_BC);
-    Bitcode->propagateDeviceOffloadInfo(Action::OFK_HIP, BoundArchs[I],
+    Bitcode->propagateDeviceOffloadInfo(Action::OFK_HIP, BoundArch(BoundArchs[I]),
                                         ToolChains[I]);
     // Wrap with the arch + toolchain so the packager records the per-image
     // triple/arch/kind.
     OffloadAction::DeviceDependences DDep;
-    DDep.add(*Bitcode, *ToolChains[I], BoundArchs[I], Action::OFK_HIP);
+    DDep.add(*Bitcode, *ToolChains[I], BoundArch(BoundArchs[I]), Action::OFK_HIP);
     OffloadActions.push_back(
         C.MakeAction<OffloadAction>(DDep, types::TY_LLVM_BC));
   }
@@ -3781,7 +3781,7 @@ class OffloadingActionBuilder final {
 
           AssembleActions.push_back(CudaDeviceActions[I]);
           FatbinToolChains.push_back(ToolChains[I]);
-          FatbinArchs.push_back(GpuArchList[I]);
+          FatbinArchs.push_back(GpuArchList[I].ArchName.data());
         }
 
         // We generate the fat binary if we have device input actions.
@@ -4736,7 +4736,7 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
           Action::OffloadKind FatbinKind = Action::OFK_None;
           OA->doOnEachDeviceDependence(
               [&](Action *DepA, const ToolChain *DepTC,
-                  const char *DepBoundArch) {
+                  BoundArch DepBoundArch) {
                 Action::OffloadKind Kind = DepA->getOffloadingDeviceKind();
 
                 // HIP packages the device CIR at the backend phase; the
@@ -4746,7 +4746,7 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
                   FatbinKind = Kind;
                   DeviceActions.push_back(DepA);
                   DeviceToolChains.push_back(DepTC);
-                  DeviceArchs.push_back(DepBoundArch);
+                  DeviceArchs.push_back(DepBoundArch.ArchName.data());
                   return;
                 }
 
@@ -4760,7 +4760,7 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
                   FatbinKind = Kind;
                   DeviceActions.push_back(DeviceAction);
                   DeviceToolChains.push_back(DepTC);
-                  DeviceArchs.push_back(DepBoundArch);
+                  DeviceArchs.push_back(DepBoundArch.ArchName.data());
                   return;
                 }
 
@@ -4778,14 +4778,14 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
           // merged fatbin is arch-agnostic, so any collected TC serves here.
           if (Fatbin)
             DDeps.add(*Fatbin, *DeviceToolChains.front(),
-                      /*BoundArch=*/nullptr, FatbinKind);
+                      /*BoundArch=*/BoundArch(), FatbinKind);
 
           Action *HostAction = OA->getHostDependence();
           HostAction = ConstructPhaseAction(C, Args, Phase, HostAction);
 
           OffloadAction::HostDependence HDep(
               *HostAction, *C.getSingleOffloadToolChain<Action::OFK_Host>(),
-              /*BoundArch=*/nullptr, DDeps);
+              /*BoundArch=*/BoundArch(), DDeps);
           NewCurrent = C.MakeAction<OffloadAction>(HDep, DDeps);
         }
 
@@ -5230,12 +5230,12 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
 
     struct CIROffloadDep final {
       const ToolChain *TC = nullptr;
-      StringRef BoundArch;
+      BoundArch BoundArch;
       Action::OffloadKind Kind = Action::OFK_None;
     };
     SmallVector<CIROffloadDep, 6> Deps;
     Deps.push_back({C.getSingleOffloadToolChain<Action::OFK_Host>(),
-                    StringRef(), Action::OFK_Host});
+                    BoundArch(), Action::OFK_Host});
 
     const Action::OffloadKind CIRKinds[] = {Action::OFK_Cuda,
                                             Action::OFK_HIP};
@@ -5250,13 +5250,13 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
         ToolChains.push_back(TI->second);
 
       for (const ToolChain *TC : ToolChains) {
-        for (StringRef Arch : getOffloadArchs(C, Args, Kind, *TC)) {
+        for (BoundArch Arch : getOffloadArchs(C, Args, Kind, *TC)) {
           types::ID DeviceInputType =
               Kind == Action::OFK_HIP ? types::TY_HIP_DEVICE
                                       : types::TY_CUDA_DEVICE;
           Action *DeviceAction =
               C.MakeAction<InputAction>(*Input.second, DeviceInputType, CUID);
-          DeviceAction->propagateDeviceOffloadInfo(Kind, Arch.data(), TC);
+          DeviceAction->propagateDeviceOffloadInfo(Kind, Arch, TC);
 
           auto PL = types::getCompilationPhases(*this, Args, DeviceInputType);
           for (phases::ID Phase : PL) {
@@ -5286,7 +5286,7 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
     unsigned HostKinds = 0;
     for (const CIROffloadDep &Dep : ArrayRef(Deps).drop_front())
       HostKinds |= Dep.Kind;
-    HostAction->setHostOffloadInfo(HostKinds, /*OArch=*/nullptr);
+    HostAction->setHostOffloadInfo(HostKinds, /*OArch=*/BoundArch());
 
     auto *Merge = C.MakeAction<CIRMergeJobAction>(MergeInputs);
     for (const CIROffloadDep &Dep : Deps)
@@ -5298,11 +5298,11 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
 
     OffloadAction::DeviceDependences DDeps;
     for (const CIROffloadDep &Dep : ArrayRef(Deps).drop_front())
-      DDeps.add(*Split, *Dep.TC, Dep.BoundArch.data(), Dep.Kind);
+      DDeps.add(*Split, *Dep.TC, Dep.BoundArch, Dep.Kind);
 
     OffloadAction::HostDependence HDep(
         *Split, *C.getSingleOffloadToolChain<Action::OFK_Host>(),
-        /*BoundArch=*/nullptr, DDeps);
+        /*BoundArch=*/BoundArch(), DDeps);
     return C.MakeAction<OffloadAction>(HDep, DDeps);
   }
 
@@ -6553,6 +6553,7 @@ InputInfoList Driver::BuildJobsForActionNoCache(
         C, Input, TC, BA, SubJobAtTopLevel, MultipleArchs, LinkingOutput,
         CachedResults, A->getOffloadingDeviceKind()));
   }
+  }
 
   // Always use the first file input as the base input.
   const char *BaseInput = InputInfos[0].getBaseInput();
@@ -6670,7 +6671,7 @@ InputInfoList Driver::BuildJobsForActionNoCache(
     }
 
     std::pair<const Action *, std::string> ActionTC = {
-        A, GetTriplePlusArchString(TC, BoundArch, TargetDeviceOffloadKind)};
+        A, GetTriplePlusArchString(TC, BA, TargetDeviceOffloadKind)};
     assert(CachedResults.find(ActionTC) != CachedResults.end() &&
            "Result does not exist??");
     Result = CachedResults[ActionTC].front();
@@ -6701,7 +6702,7 @@ InputInfoList Driver::BuildJobsForActionNoCache(
       TargetDeviceOffloadKind != Action::OFK_Host &&
       JA->getOffloadingDeviceKind() == Action::OFK_None)
     const_cast<JobAction *>(JA)->propagateDeviceOffloadInfo(
-        TargetDeviceOffloadKind, BoundArch.data(), TC);
+        TargetDeviceOffloadKind, BA, TC);
 
   if (CCCPrintBindings && !CCGenDiagnostics) {
     llvm::errs() << "# \"" << T->getToolChain().getEffectiveTriple().str()

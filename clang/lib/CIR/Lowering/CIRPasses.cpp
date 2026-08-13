@@ -94,11 +94,22 @@ runCIRToCIRPasses(mlir::ModuleOp theModule, mlir::MLIRContext &mlirContext,
 
   pm.addPass(mlir::createTargetLoweringPass());
   pm.addPass(mlir::createCXXABILoweringPass());
-                  clang::ASTContext &astContext, cir::LowerModule &lowerModule,
-                  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs,
-                  bool enableVerifier, bool enableIdiomRecognizer,
-                  bool enableCIRSimplify, bool enableLibOpt,
-                  llvm::StringRef libOptOptions, bool enableCallConvLowering) {
+
+  if (enableCallConvLowering) {
+    // CallConvLowering rewrites signatures and call sites using the classifier,
+    // so it must run after CXXABILowering has lowered C++ ABI types to plain
+    // records the classifier can handle.  Only the x86_64 System V classifier
+    // is implemented; other targets are left unchanged.
+    CallConvTarget target =
+        getCallConvTarget(astContext.getTargetInfo().getTriple());
+    if (target != CallConvTarget::None)
+      pm.addPass(mlir::createCallConvLoweringPass(
+          target, llvm::abi::X86AVXABILevel::None,
+          getX86ABICompatInfo(astContext)));
+  }
+
+  pm.addPass(mlir::createLoweringPreparePass(&lowerModule, std::move(vfs)));
+
   pm.enableVerifier(enableVerifier);
   (void)mlir::applyPassManagerCLOptions(pm);
   return pm.run(theModule);

@@ -9525,7 +9525,7 @@ static void addOffloadTargetsArg(
     if ((Dep.DependentOffloadKind == Action::OFK_HIP ||
          Dep.DependentOffloadKind == Action::OFK_Cuda) &&
         !Dep.DependentBoundArch.empty()) {
-      Triples += -; Triples += Dep.DependentBoundArch.ArchName;
+      Triples += '-'; Triples += Dep.DependentBoundArch.ArchName;
     }
   }
   CmdArgs.push_back(TCArgs.MakeArgString(Triples));
