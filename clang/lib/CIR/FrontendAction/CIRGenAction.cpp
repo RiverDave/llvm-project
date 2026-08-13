@@ -333,7 +333,6 @@ public:
                             CGO.OptimizationLevel > 0, EnableLibOpt,
                             LibOptOptions, FEOptions.ClangIRCallConvLowering)
               .failed()) {
-              .failed()) {
         // Pass-side errors already routed through ClangIRDiagnosticHandler.
         // Skip the generic catch-all if a specific diagnostic was emitted.
         if (!CI.getDiagnostics().hasErrorOccurred())
@@ -484,9 +483,9 @@ void CIRGenAction::ExecuteAction() {
     mlirSaveTempsOutFile = std::string(stem);
   }
 
-  std::unique_ptr<llvm::Module> LLVMModule =
-      lowerFromCIRToLLVMIR(*MLIRMod, *Ctx, mlirSaveTempsOutFile,
-                           &CI.getVirtualFileSystem());
+  std::unique_ptr<llvm::Module> LLVMModule = lowerFromCIRToLLVMIR(
+      *MLIRMod, *Ctx, /*EnableOpenMP=*/false, mlirSaveTempsOutFile,
+      &CI.getVirtualFileSystem());
   if (!LLVMModule)
     return;
 
