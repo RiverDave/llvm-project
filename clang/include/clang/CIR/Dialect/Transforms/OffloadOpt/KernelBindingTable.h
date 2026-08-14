@@ -31,17 +31,68 @@ class raw_ostream;
 
 namespace cir {
 
+// One host-side launch of a kernel: the call to the device stub, which carries
+// the kernel arguments, and the `__cudaPushCallConfiguration` /
+// `__hipPushCallConfiguration` call preceding it, which carries the geometry.
+//
+// Only the two anchor calls are stored. Argument values, launch dimensions and
+// their constants are read back out of the IR on demand, so a descriptor can
+// never report a value the IR has since stopped holding.
+struct LaunchSite {
+  cir::CallOp stubCall;
+
+  // Null when the geometry could not be traced: the launch was not emitted in
+  // the shape CIRGen produces, or the CFG has already been flattened.
+  cir::CallOp pushConfigCall;
+
+  llvm::StringRef getKernelName() const;
+
+  unsigned getNumArgs() const;
+  mlir::Value getArg(unsigned i) const;
+  // The constant passed for argument `i`, or null if it is not a constant.
+  mlir::TypedAttr getConstArg(unsigned i) const;
+
+  // A launch dimension, recovered from the dim3 temporary the push call reads.
+  // A component is null when it could not be traced.
+  struct Dim3 {
+    mlir::Value x, y, z;
+    mlir::TypedAttr constX() const;
+    mlir::TypedAttr constY() const;
+    mlir::TypedAttr constZ() const;
+    bool isFullyConstant() const;
+  };
+
+  Dim3 getGridDim() const;
+  Dim3 getBlockDim() const;
+
+  mlir::Value getSharedMemBytes() const;
+  mlir::TypedAttr getConstSharedMem() const;
+
+  mlir::Value getStream() const;
+  bool isDefaultStream() const;
+
+  bool hasGeometry() const {
+    return pushConfigCall != nullptr;
+  }
+};
+
 // Binding for one kernel, keyed by its device mangled name. A name may resolve
 // in several device modules (multi-arch); the owning module of each kernel is
 // recoverable via k->getParentOfType<mlir::ModuleOp>().
 //
 // `launchSites` are the host calls to `hostStub`, which carry the same
-// `cu.kernel_name` key as the stub itself. 
+// `cu.kernel_name` key as the stub itself.
 struct KernelBinding {
   cir::FuncOp hostStub;
   llvm::SmallVector<cir::FuncOp, 2> deviceKernels;
-  llvm::SmallVector<cir::CallOp, 2> launchSites;
+  llvm::SmallVector<LaunchSite, 2> launchSites;
 };
+
+// The kernel `op` launches, or a null attribute if it is not a launch site.
+// This is what the table records as a launch site, and what a pass must accept
+// when checking that it can see every launch of a stub: the two answers come
+// from here so they cannot drift apart.
+cir::CUDAKernelNameAttr getLaunchedKernel(mlir::Operation *op);
 
 class KernelBindingTable {
 public:
@@ -56,7 +107,8 @@ public:
 
   // Host calls launching the named kernel. Empty if the name is unbound or the
   // kernel is never launched in this TU.
-  llvm::ArrayRef<cir::CallOp> getLaunchSites(llvm::StringRef kernelName) const;
+  llvm::ArrayRef<cir::LaunchSite>
+  getLaunchSites(llvm::StringRef kernelName) const;
 
   bool empty() const { return bindings.empty(); }
   size_t size() const { return bindings.size(); }
