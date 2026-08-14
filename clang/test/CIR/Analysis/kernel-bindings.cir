@@ -260,4 +260,154 @@ module {
 // CHECK-NEXT: kernel kern_nc
 // CHECK-NEXT: host-stub @stub_nc
 // CHECK-NEXT: device @device_0 : @kern_nc
-// CHECK-NEXT: launch in @launch_nc : 1 args, grid dynamic, block dynamic, stream default
+// CHECK-NEXT: launch in @launch_nc : 1 args, grid untraced, block untraced, stream default
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u32i = !cir.int<u, 32>
+!rec_dim3 = !cir.struct<"dim3" {data !u32i, data !u32i, data !u32i}>
+
+// A dimension built from a runtime value is traced, but is not constant. This
+// is distinct from a dimension that could not be traced at all.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @__cudaPushCallConfiguration(!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+      cir.func private @dim3_ctor(!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) func_info<#cir.cxx_ctor<!rec_dim3, custom>>
+      cir.func internal private @stub_dyn(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_dyn">} {
+        cir.return
+      }
+      cir.func @launch_dyn(%n: !u32i) {
+        %grid = cir.alloca "agg.tmp0" align(4) : !cir.ptr<!rec_dim3>
+        %block = cir.alloca "agg.tmp1" align(4) : !cir.ptr<!rec_dim3>
+        %one = cir.const #cir.int<1> : !u32i
+        cir.call @dim3_ctor(%grid, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        cir.call @dim3_ctor(%block, %n, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        %shmem = cir.const #cir.int<0> : !u32i
+        %stream = cir.const #cir.ptr<null> : !cir.ptr<!s32i>
+        %g = cir.load %grid : !cir.ptr<!rec_dim3>, !rec_dim3
+        %b = cir.load %block : !cir.ptr<!rec_dim3>, !rec_dim3
+        %r = cir.call @__cudaPushCallConfiguration(%g, %b, %shmem, %stream) : (!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+        %c = cir.cast int_to_bool %r : !s32i -> !cir.bool
+        cir.if %c {
+        } else {
+          %v = cir.const #cir.int<7> : !s32i
+          cir.call @stub_dyn(%v) {cu.kernel_name = #cir.cu.kernel_name<"kern_dyn">} : (!s32i) -> ()
+        }
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_dyn(%arg0: !s32i) cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK: kernel kern_dyn
+// CHECK-NEXT: host-stub @stub_dyn
+// CHECK-NEXT: device @device_0 : @kern_dyn
+// CHECK-NEXT: launch in @launch_dyn : 1 args, grid const, block dynamic, stream default
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u32i = !cir.int<u, 32>
+!rec_dim3 = !cir.struct<"dim3" {data !u32i, data !u32i, data !u32i}>
+
+// Once the CFG is flattened the guarding cir.if is gone -- the branch remains,
+// as blocks -- and the push call can no longer be reached from the launch, so
+// no geometry is reported.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @__cudaPushCallConfiguration(!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+      cir.func private @dim3_ctor(!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) func_info<#cir.cxx_ctor<!rec_dim3, custom>>
+      cir.func internal private @stub_flat(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_flat">} {
+        cir.return
+      }
+      cir.func @launch_flat() {
+        %grid = cir.alloca "agg.tmp0" align(4) : !cir.ptr<!rec_dim3>
+        %block = cir.alloca "agg.tmp1" align(4) : !cir.ptr<!rec_dim3>
+        %one = cir.const #cir.int<1> : !u32i
+        cir.call @dim3_ctor(%grid, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        cir.call @dim3_ctor(%block, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        %shmem = cir.const #cir.int<0> : !u32i
+        %stream = cir.const #cir.ptr<null> : !cir.ptr<!s32i>
+        %g = cir.load %grid : !cir.ptr<!rec_dim3>, !rec_dim3
+        %b = cir.load %block : !cir.ptr<!rec_dim3>, !rec_dim3
+        %r = cir.call @__cudaPushCallConfiguration(%g, %b, %shmem, %stream) : (!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+        %c = cir.cast int_to_bool %r : !s32i -> !cir.bool
+        cir.brcond %c ^bb1, ^bb2
+      ^bb1:
+        cir.br ^bb3
+      ^bb2:
+        %v = cir.const #cir.int<7> : !s32i
+        cir.call @stub_flat(%v) {cu.kernel_name = #cir.cu.kernel_name<"kern_flat">} : (!s32i) -> ()
+        cir.br ^bb3
+      ^bb3:
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_flat(%arg0: !s32i) cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK: kernel kern_flat
+// CHECK-NEXT: host-stub @stub_flat
+// CHECK-NEXT: device @device_0 : @kern_flat
+// CHECK-NEXT: launch in @launch_flat : 1 args, <no geometry>
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u32i = !cir.int<u, 32>
+!rec_dim3 = !cir.struct<"dim3" {data !u32i, data !u32i, data !u32i}>
+
+// A constant stream that is not the null pointer is not the default stream.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @__cudaPushCallConfiguration(!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+      cir.func private @dim3_ctor(!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) func_info<#cir.cxx_ctor<!rec_dim3, custom>>
+      cir.func internal private @stub_stream(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_stream">} {
+        cir.return
+      }
+      cir.func @launch_stream() {
+        %grid = cir.alloca "agg.tmp0" align(4) : !cir.ptr<!rec_dim3>
+        %block = cir.alloca "agg.tmp1" align(4) : !cir.ptr<!rec_dim3>
+        %one = cir.const #cir.int<1> : !u32i
+        cir.call @dim3_ctor(%grid, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        cir.call @dim3_ctor(%block, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        %shmem = cir.const #cir.int<0> : !u32i
+        %stream = cir.const #cir.ptr<4660 : i64> : !cir.ptr<!s32i>
+        %g = cir.load %grid : !cir.ptr<!rec_dim3>, !rec_dim3
+        %b = cir.load %block : !cir.ptr<!rec_dim3>, !rec_dim3
+        %r = cir.call @__cudaPushCallConfiguration(%g, %b, %shmem, %stream) : (!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+        %c = cir.cast int_to_bool %r : !s32i -> !cir.bool
+        cir.if %c {
+        } else {
+          %v = cir.const #cir.int<7> : !s32i
+          cir.call @stub_stream(%v) {cu.kernel_name = #cir.cu.kernel_name<"kern_stream">} : (!s32i) -> ()
+        }
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_stream(%arg0: !s32i) cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK: kernel kern_stream
+// CHECK-NEXT: host-stub @stub_stream
+// CHECK-NEXT: device @device_0 : @kern_stream
+// CHECK-NEXT: launch in @launch_stream : 1 args, grid const, block const, stream explicit

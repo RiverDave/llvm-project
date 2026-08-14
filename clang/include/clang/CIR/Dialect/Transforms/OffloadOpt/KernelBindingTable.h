@@ -53,12 +53,16 @@ struct LaunchSite {
   mlir::TypedAttr getConstArg(unsigned i) const;
 
   // A launch dimension, recovered from the dim3 temporary the push call reads.
-  // A component is null when it could not be traced.
+  //
+  // Failing to recover a dimension and recovering a dimension that turns out to
+  // be a runtime value are different answers: `isTraced` reports the first,
+  // `isFullyConstant` the second. A component is null when it was not traced.
   struct Dim3 {
     mlir::Value x, y, z;
     mlir::TypedAttr constX() const;
     mlir::TypedAttr constY() const;
     mlir::TypedAttr constZ() const;
+    bool isTraced() const;
     bool isFullyConstant() const;
   };
 

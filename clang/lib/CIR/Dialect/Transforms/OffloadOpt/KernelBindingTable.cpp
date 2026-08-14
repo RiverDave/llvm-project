@@ -23,14 +23,26 @@ static mlir::TypedAttr asConst(mlir::Value v) {
   return cst ? cst.getValue() : mlir::TypedAttr{};
 }
 
+// Sema picks the launch configuration function from the language mode, in
+// SemaCUDA::getConfigureFuncName. Of the five it can pick, CIRGen emits a stub
+// body only for the two below: `-foffload-via-llvm` reports NYI when the CUDA
+// runtime is constructed, and the legacy `cudaConfigureCall` /
+// `hipConfigureCall` reach errorNYI("Emit Stub Body Legacy").
+//
+// The argument count is part of the test because the geometry accessors index
+// the operands directly; without it, only the name stands between a same-named
+// declaration and a read past the end.
 static bool isPushCallConfiguration(cir::CallOp call) {
   std::optional<llvm::StringRef> callee = call.getCallee();
   if (!callee)
     return false;
   assert(*callee != "__llvmPushCallConfiguration" &&
-         "NYI: new offload driver launch configuration");
-  return *callee == "__cudaPushCallConfiguration" ||
-         *callee == "__hipPushCallConfiguration";
+         *callee != "cudaConfigureCall" && *callee != "hipConfigureCall" &&
+         "NYI: launch configuration form CIRGen does not emit");
+  if (*callee != "__cudaPushCallConfiguration" &&
+      *callee != "__hipPushCallConfiguration")
+    return false;
+  return call.getArgOperands().size() == 4;
 }
 
 // CIRGen guards a launch with the result of the push-call-configuration call:
@@ -132,6 +144,8 @@ mlir::TypedAttr cir::LaunchSite::Dim3::constX() const { return asConst(x); }
 mlir::TypedAttr cir::LaunchSite::Dim3::constY() const { return asConst(y); }
 mlir::TypedAttr cir::LaunchSite::Dim3::constZ() const { return asConst(z); }
 
+bool cir::LaunchSite::Dim3::isTraced() const { return x && y && z; }
+
 bool cir::LaunchSite::Dim3::isFullyConstant() const {
   return constX() && constY() && constZ();
 }
@@ -166,7 +180,8 @@ mlir::Value cir::LaunchSite::getStream() const {
 }
 
 bool cir::LaunchSite::isDefaultStream() const {
-  return mlir::isa_and_present<cir::ConstPtrAttr>(asConst(getStream()));
+  auto ptr = mlir::dyn_cast_if_present<cir::ConstPtrAttr>(asConst(getStream()));
+  return ptr && ptr.isNullValue();
 }
 
 cir::CUDAKernelNameAttr cir::getLaunchedKernel(mlir::Operation *op) {
@@ -262,12 +277,16 @@ void KernelBindingTable::print(llvm::raw_ostream &os) const {
         os << ", <no geometry>\n";
         continue;
       }
-      cir::LaunchSite::Dim3 grid = launch.getGridDim();
-      cir::LaunchSite::Dim3 block = launch.getBlockDim();
-      os << ", grid " << (grid.isFullyConstant() ? "const" : "dynamic")
-         << ", block " << (block.isFullyConstant() ? "const" : "dynamic")
-         << ", stream " << (launch.isDefaultStream() ? "default" : "explicit")
-         << "\n";
+      // "untraced" means the dimension was not recovered; "dynamic" means it
+      // was, and holds a runtime value.
+      auto label = [](const cir::LaunchSite::Dim3 &dim) -> llvm::StringRef {
+        if (!dim.isTraced())
+          return "untraced";
+        return dim.isFullyConstant() ? "const" : "dynamic";
+      };
+      os << ", grid " << label(launch.getGridDim()) << ", block "
+         << label(launch.getBlockDim()) << ", stream "
+         << (launch.isDefaultStream() ? "default" : "explicit") << "\n";
     }
     os << "//\n";
   }
