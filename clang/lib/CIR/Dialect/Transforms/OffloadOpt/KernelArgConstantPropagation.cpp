@@ -23,37 +23,39 @@ using namespace cir;
 namespace {
 
 // The launch sites recorded for a stub are all of them when no other TU can
-// call it and its address never escapes. An escaped stub may be called
-// indirectly with arguments this pass cannot see. The stub references itself,
-// since it hands its own address to cudaLaunchKernel, so only uses outside its
-// own body are considered.
-static bool allLaunchSitesVisible(cir::FuncOp stub, mlir::Operation *scope) {
+// call it and every reference to it is one the table recorded. A reference that
+// is not a launch site of this kernel -- an escaping address, or a call the
+// table did not collect -- may reach the kernel with arguments this pass cannot
+// see. The stub references itself, since it hands its own address to
+// cudaLaunchKernel, so only uses outside its own body are considered.
+static bool allLaunchSitesVisible(cir::FuncOp stub, llvm::StringRef kernelName,
+                                  mlir::Operation *scope) {
   if (!cir::isLocalLinkage(stub.getLinkage()))
     return false;
   auto uses = mlir::SymbolTable::getSymbolUses(stub, scope);
   if (!uses)
     return false;
   return llvm::all_of(*uses, [&](const mlir::SymbolTable::SymbolUse &use) {
-    return stub->isProperAncestor(use.getUser()) ||
-           mlir::isa<cir::CallOp>(use.getUser());
+    if (stub->isProperAncestor(use.getUser()))
+      return true;
+    cir::CUDAKernelNameAttr launched = cir::getLaunchedKernel(use.getUser());
+    return launched && launched.getKernelName() == kernelName;
   });
 }
 
 // The constant every site passes for argument `argIdx`, or null if they
-// disagree or any of them passes a non-constant.
+// disagree or any of them passes a non-constant. Agreement is a property of the
+// set of sites, so it lives here rather than on a single site.
 static mlir::TypedAttr
-commonConstantArg(llvm::ArrayRef<cir::CallOp> sites, unsigned argIdx) {
+commonConstantArg(llvm::ArrayRef<cir::LaunchSite> sites, unsigned argIdx) {
   mlir::TypedAttr common;
-  for (cir::CallOp site : sites) {
-    mlir::OperandRange args = site.getArgOperands();
-    if (argIdx >= args.size())
-      return {};
-    auto cst = args[argIdx].getDefiningOp<cir::ConstantOp>();
-    if (!cst)
+  for (const cir::LaunchSite &site : sites) {
+    mlir::TypedAttr value = site.getConstArg(argIdx);
+    if (!value)
       return {};
     if (!common)
-      common = cst.getValue();
-    else if (common != cst.getValue())
+      common = value;
+    else if (common != value)
       return {};
   }
   return common;
@@ -74,12 +76,12 @@ void OffloadKernelArgConstantPropagationPass::runOnOperation() {
   for (const auto &entry : table) {
     const cir::KernelBinding &binding = entry.second;
     cir::FuncOp stub = binding.hostStub;
-    llvm::ArrayRef<cir::CallOp> sites = binding.launchSites;
+    llvm::ArrayRef<cir::LaunchSite> sites = binding.launchSites;
 
     // A kernel launched nowhere in this TU says nothing about its arguments.
     if (sites.empty())
       continue;
-    if (!allLaunchSitesVisible(stub, hostModule))
+    if (!allLaunchSitesVisible(stub, entry.first, hostModule))
       continue;
 
     for (unsigned i = 0, e = stub.getNumArguments(); i != e; ++i) {

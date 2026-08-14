@@ -276,3 +276,75 @@ module {
 // CHECK-NEXT: %[[C:.*]] = cir.const #cir.int<42> : !s32i
 // CHECK-NEXT: cir.call @use_mixed(%arg0)
 // CHECK-NEXT: cir.call @use_mixed(%[[C]])
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// A call to the stub that the table did not record as a launch site: the
+// recorded sites are not all the calls, so nothing is propagated.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_untagged(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_untagged">} {
+        cir.return
+      }
+      cir.func @launch_a_untagged() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_untagged(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_untagged">} : (!s32i) -> ()
+        cir.return
+      }
+      cir.func @launch_b_untagged() {
+        %0 = cir.const #cir.int<99> : !s32i
+        cir.call @stub_untagged(%0) : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_untagged(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_untagged(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_untagged(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_untagged(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: cir.call @use_untagged(%arg0)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// A call to the stub tagged for a different kernel is a launch site of that
+// kernel, not of this one, so this stub's launches are not all accounted for.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_othername(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_othername">} {
+        cir.return
+      }
+      cir.func @launch_a_othername() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_othername(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_othername">} : (!s32i) -> ()
+        cir.return
+      }
+      cir.func @launch_b_othername() {
+        %0 = cir.const #cir.int<99> : !s32i
+        cir.call @stub_othername(%0) {cu.kernel_name = #cir.cu.kernel_name<"somewhere_else">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_othername(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_othername(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_othername(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_othername(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: cir.call @use_othername(%arg0)
