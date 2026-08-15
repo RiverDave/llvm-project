@@ -60,6 +60,7 @@ std::unique_ptr<Pass> createCUDARegisterModulePass(
     llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr);
 std::unique_ptr<Pass> createMaterializeASTFactsPass();
 std::unique_ptr<Pass> createOffloadDeadKernelEliminationPass();
+std::unique_ptr<Pass> createOffloadKernelArgConstantPropagationPass();
 std::unique_ptr<Pass> createGotoSolverPass();
 std::unique_ptr<Pass> createIdiomRecognizerPass();
 std::unique_ptr<Pass> createLibOptPass();

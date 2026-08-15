@@ -1,6 +1,7 @@
 add_clang_library(MLIRCIROffloadOpt
   KernelBindingTable.cpp
   DeadKernelElimination.cpp
+  KernelArgConstantPropagation.cpp
 
   DEPENDS
   MLIRCIROpsIncGen
