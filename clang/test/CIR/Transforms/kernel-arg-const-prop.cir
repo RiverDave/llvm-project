@@ -1,0 +1,350 @@
+// RUN: cir-opt %s -split-input-file \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-kernel-arg-const-prop))" \
+// RUN:   | FileCheck %s
+
+!s32i = !cir.int<s, 32>
+
+// Single launch with a constant argument: uses of the kernel parameter are
+// replaced, the signature is untouched.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_single(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_single">} {
+        %0 = cir.get_global @stub_single : !cir.ptr<!cir.func<(!s32i)>>
+        cir.return
+      }
+      cir.func @launch_single() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_single(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_single">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_single(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_single(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_single(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_single(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: %[[C:.*]] = cir.const #cir.int<7> : !s32i
+// CHECK-NEXT: cir.call @use_single(%[[C]])
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// Two launches agreeing on the constant.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_agree(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_agree">} {
+        cir.return
+      }
+      cir.func @launch_a_agree() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_agree(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_agree">} : (!s32i) -> ()
+        cir.return
+      }
+      cir.func @launch_b_agree() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_agree(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_agree">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_agree(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_agree(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_agree(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_agree(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: %[[C:.*]] = cir.const #cir.int<7> : !s32i
+// CHECK-NEXT: cir.call @use_agree(%[[C]])
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// The constant applies to every arch's copy of the kernel.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_multiarch(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_multiarch">} {
+        cir.return
+      }
+      cir.func @launch_multiarch() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_multiarch(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_multiarch">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_multiarch(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_multiarch(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_multiarch(!s32i)
+    }
+    builtin.module @device_1 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_multiarch(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_multiarch(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_multiarch(!s32i)
+    }
+  }
+}
+
+// CHECK: builtin.module @device_0
+// CHECK: cir.func @kern_multiarch(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: %[[C0:.*]] = cir.const #cir.int<7> : !s32i
+// CHECK-NEXT: cir.call @use_multiarch(%[[C0]])
+// CHECK: builtin.module @device_1
+// CHECK: cir.func @kern_multiarch(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: %[[C1:.*]] = cir.const #cir.int<7> : !s32i
+// CHECK-NEXT: cir.call @use_multiarch(%[[C1]])
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// Launch sites disagree: nothing is propagated.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_disagree(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_disagree">} {
+        cir.return
+      }
+      cir.func @launch_a_disagree() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_disagree(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_disagree">} : (!s32i) -> ()
+        cir.return
+      }
+      cir.func @launch_b_disagree() {
+        %0 = cir.const #cir.int<9> : !s32i
+        cir.call @stub_disagree(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_disagree">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_disagree(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_disagree(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_disagree(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_disagree(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: cir.call @use_disagree(%arg0)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// External stub: another TU may launch with a different value.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func @stub_external(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_external">} {
+        cir.return
+      }
+      cir.func @launch_external() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_external(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_external">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_external(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_external(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_external(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_external(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: cir.call @use_external(%arg0)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// The stub's address escapes to a host function, so it may be called
+// indirectly with arguments this pass cannot see.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_escaped(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_escaped">} {
+        cir.return
+      }
+      cir.func @launch_escaped() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_escaped(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_escaped">} : (!s32i) -> ()
+        %1 = cir.get_global @stub_escaped : !cir.ptr<!cir.func<(!s32i)>>
+        cir.call @escape_escaped(%1) : (!cir.ptr<!cir.func<(!s32i)>>) -> ()
+        cir.return
+      }
+      cir.func private @escape_escaped(!cir.ptr<!cir.func<(!s32i)>>)
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_escaped(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_escaped(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_escaped(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_escaped(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: cir.call @use_escaped(%arg0)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// Kernel never launched in this TU: nothing is known about its arguments.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_nolaunch(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_nolaunch">} {
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_nolaunch(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_nolaunch(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_nolaunch(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_nolaunch(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: cir.call @use_nolaunch(%arg0)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// Agreement is per argument: the sites disagree on the first argument and
+// agree on the second, so only the second is propagated.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_mixed(%arg0: !s32i, %arg1: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_mixed">} {
+        cir.return
+      }
+      cir.func @launch_a_mixed() {
+        %0 = cir.const #cir.int<7> : !s32i
+        %1 = cir.const #cir.int<42> : !s32i
+        cir.call @stub_mixed(%0, %1) {cu.kernel_name = #cir.cu.kernel_name<"kern_mixed">} : (!s32i, !s32i) -> ()
+        cir.return
+      }
+      cir.func @launch_b_mixed() {
+        %0 = cir.const #cir.int<9> : !s32i
+        %1 = cir.const #cir.int<42> : !s32i
+        cir.call @stub_mixed(%0, %1) {cu.kernel_name = #cir.cu.kernel_name<"kern_mixed">} : (!s32i, !s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_mixed(%arg0: !s32i, %arg1: !s32i) cc(ptx_kernel) {
+        cir.call @use_mixed(%arg0) : (!s32i) -> ()
+        cir.call @use_mixed(%arg1) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_mixed(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_mixed(%arg0: !s32i, %arg1: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: %[[C:.*]] = cir.const #cir.int<42> : !s32i
+// CHECK-NEXT: cir.call @use_mixed(%arg0)
+// CHECK-NEXT: cir.call @use_mixed(%[[C]])
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// A call to the stub that the table did not record as a launch site: the
+// recorded sites are not all the calls, so nothing is propagated.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_untagged(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_untagged">} {
+        cir.return
+      }
+      cir.func @launch_a_untagged() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_untagged(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_untagged">} : (!s32i) -> ()
+        cir.return
+      }
+      cir.func @launch_b_untagged() {
+        %0 = cir.const #cir.int<99> : !s32i
+        cir.call @stub_untagged(%0) : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_untagged(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_untagged(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_untagged(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_untagged(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: cir.call @use_untagged(%arg0)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// A call to the stub tagged for a different kernel is a launch site of that
+// kernel, not of this one, so this stub's launches are not all accounted for.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_othername(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_othername">} {
+        cir.return
+      }
+      cir.func @launch_a_othername() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_othername(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_othername">} : (!s32i) -> ()
+        cir.return
+      }
+      cir.func @launch_b_othername() {
+        %0 = cir.const #cir.int<99> : !s32i
+        cir.call @stub_othername(%0) {cu.kernel_name = #cir.cu.kernel_name<"somewhere_else">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_othername(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_othername(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_othername(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_othername(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: cir.call @use_othername(%arg0)
