@@ -239,6 +239,15 @@ def OffloadDeadKernelElimination
   }];
   let constructor = "mlir::createOffloadDeadKernelEliminationPass()";
   let dependentDialects = ["cir::CIRDialect"];
+  let statistics = [
+    Statistic<"numStubsErased", "num-stubs-erased",
+              "Number of dead host stubs removed">,
+    Statistic<"numKernelsErased", "num-kernels-erased",
+              "Number of unlaunchable device kernels removed">,
+    Statistic<"numKernelsPreserved", "num-kernels-preserved",
+              "Number of stubless device kernels kept because device code "
+              "still references them">,
+  ];
 }
 
 def IdiomRecognizer : Pass<"cir-idiom-recognizer", "mlir::ModuleOp"> {

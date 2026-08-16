@@ -1,0 +1,74 @@
+// RUN: cir-opt %s \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-dead-kernel-elimination))" \
+// RUN:   -mlir-pass-statistics -o /dev/null 2>&1 \
+// RUN:   | FileCheck --check-prefix=STATS %s
+
+// RUN: cir-opt %s \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-dead-kernel-elimination))" \
+// RUN:   --remarks-filter=".*" -o /dev/null 2>&1 \
+// RUN:   | FileCheck --check-prefix=REMARK %s
+
+// RUN: cir-opt %s \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-dead-kernel-elimination))" \
+// RUN:   | FileCheck --check-prefix=IR %s
+
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      // Erased: internal stub, never launched. Its device kernel loses its
+      // anchor and is erased by the device-side phase too.
+      cir.func internal private @stub_dead() attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_dead">} {
+        %0 = cir.get_global @stub_dead : !cir.ptr<!cir.func<()>>
+        cir.return
+      }
+
+      // Preserved: external stub, so another TU may launch through it.
+      cir.func @stub_ext() attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_ext">} {
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_dead() cc(ptx_kernel) {
+        cir.return
+      }
+      // Live through its external stub, and keeps @kern_child alive.
+      cir.func @kern_ext() cc(ptx_kernel) {
+        %0 = cir.get_global @kern_child : !cir.ptr<!cir.func<()>>
+        cir.return
+      }
+      // Erased: no host stub, no device-side reference.
+      cir.func comdat @kern_static() cc(ptx_kernel) {
+        cir.return
+      }
+      // Preserved: no host stub, but referenced from device code.
+      cir.func comdat @kern_child() cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// The container is set up so each counter has exactly one cause, except
+// num-kernels-erased which covers both the stubless kernel and the one whose
+// stub died.
+// IR-LABEL: cir.offload.container
+// IR-NOT: @stub_dead
+// IR-NOT: @kern_dead
+// IR-NOT: @kern_static
+// IR-DAG: cir.func @stub_ext
+// IR-DAG: cir.func @kern_ext
+// IR-DAG: cir.func comdat @kern_child
+
+// STATS: OffloadDeadKernelElimination
+// STATS-DAG: 1 num-stubs-erased
+// STATS-DAG: 2 num-kernels-erased
+// STATS-DAG: 1 num-kernels-preserved
+
+// Both erase paths are distinguishable by their reason.
+// REMARK-DAG: remark: [Passed] DeadKernelElimination | Category:cir-offload-dke | Function=kern_dead | {{.*}}Reason="internal linkage and no launch left"
+// REMARK-DAG: remark: [Passed] DeadKernelElimination | Category:cir-offload-dke | Function=kern_static | {{.*}}Reason="no host stub and no device-side reference"
+
+// Preserved kernels report why they could not be removed. A stub that is still
+// launched is simply live and is not reported.
+// REMARK-DAG: remark: [Missed] DeadKernelElimination | Category:cir-offload-dke | Function=kern_ext | {{.*}}Reason="external linkage: another TU may launch through this stub"
+// REMARK-DAG: remark: [Missed] DeadKernelElimination | Category:cir-offload-dke | Function=kern_child | {{.*}}Reason="referenced by device code (dynamic parallelism or address-taken)"
