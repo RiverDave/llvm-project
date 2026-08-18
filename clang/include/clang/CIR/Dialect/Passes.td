@@ -346,4 +346,38 @@ def OffloadKernelArgConstantPropagation
   let dependentDialects = ["cir::CIRDialect"];
 }
 
+def OffloadLaunchBoundsPropagation
+    : Pass<"cir-offload-launch-bounds-propagation", "cir::OffloadContainerOp"> {
+  let summary = "Infer device kernel launch bounds from host launch sites";
+  let description = [{
+    Runs over a `cir.offload.container`. When every launch of a kernel is
+    visible and uses a compile-time block size, the largest block size any of
+    them uses is recorded on the device kernel as `nvvm.maxntid`, the bound the
+    user could have written with `__launch_bounds__`.
+
+    The bound lets ptxas budget registers against the real block size instead of
+    the 1024-thread ceiling, and lets `NVVMIntrRange` narrow the range metadata
+    on `tid` reads.
+
+    Requires every launch to be visible, on the same terms as the kernel
+    argument constant propagation pass: the host stub has internal linkage and
+    every reference to it outside its own body is a recorded launch. A launch
+    this container cannot see may use a larger block, and exceeding `maxntid` is
+    a launch failure rather than a slowdown.
+
+    An existing bound is only ever tightened. A kernel whose geometry could not
+    be traced, or whose block size is a runtime value at any site, is left
+    alone.
+
+    NVPTX only. AMDGPU kernels already carry `amdgpu-flat-work-group-size` from
+    CIRGen, so propagating there overwrites an existing value rather than adding
+    one and needs its own handling.
+
+    Requires the launch geometry to already be constant at the call site, which
+    for anything but a literal means `mem2reg` and `sccp` have run.
+  }];
+  let constructor = "mlir::createOffloadLaunchBoundsPropagationPass()";
+  let dependentDialects = ["cir::CIRDialect"];
+}
+
 #endif // CLANG_CIR_DIALECT_PASSES_TD

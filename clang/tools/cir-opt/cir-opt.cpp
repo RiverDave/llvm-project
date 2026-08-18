@@ -116,6 +116,10 @@ int main(int argc, char **argv) {
     return mlir::createOffloadKernelArgConstantPropagationPass();
   });
 
+  ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+    return mlir::createOffloadLaunchBoundsPropagationPass();
+  });
+
   cir::test::registerPrintKernelBindingsPass();
 
   mlir::omp::registerOpenMPPasses();
