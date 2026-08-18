@@ -1,0 +1,67 @@
+// RUN: cir-opt %s -split-input-file \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-bounds-propagation))" \
+// RUN:   | FileCheck %s
+
+!s32i = !cir.int<s, 32>
+!u32i = !cir.int<u, 32>
+
+// Single launch with a constant block size: the kernel gets the bound the user
+// could have written as __launch_bounds__(256).
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_single(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_single">} {
+        %0 = cir.get_global @stub_single : !cir.ptr<!cir.func<(!s32i)>>
+        cir.return
+      }
+      cir.func @launch_single() {
+        %g = cir.const #cir.int<64> : !u32i
+        %b = cir.const #cir.int<256> : !u32i
+        %one = cir.const #cir.int<1> : !u32i
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @__cudaPushCallConfiguration(%g, %one, %one, %b, %one, %one) : (!u32i, !u32i, !u32i, !u32i, !u32i, !u32i) -> ()
+        cir.call @stub_single(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_single">} : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @__cudaPushCallConfiguration(!u32i, !u32i, !u32i, !u32i, !u32i, !u32i)
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_single(%arg0: !s32i) cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_single
+// CHECK-SAME: cir.nvvm.maxntid = "256"
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// No geometry recorded: nothing is inferred, since an untraced launch may use a
+// larger block than any we can see.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_opaque(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_opaque">} {
+        %0 = cir.get_global @stub_opaque : !cir.ptr<!cir.func<(!s32i)>>
+        cir.return
+      }
+      cir.func @launch_opaque() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_opaque(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_opaque">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_opaque(%arg0: !s32i) cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_opaque
+// CHECK-NOT: cir.nvvm.maxntid
