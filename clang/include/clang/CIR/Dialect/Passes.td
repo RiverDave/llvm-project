@@ -369,10 +369,6 @@ def OffloadLaunchBoundsPropagation
     be traced, or whose block size is a runtime value at any site, is left
     alone.
 
-    NVPTX only. AMDGPU kernels already carry `amdgpu-flat-work-group-size` from
-    CIRGen, so propagating there overwrites an existing value rather than adding
-    one and needs its own handling.
-
     Requires the launch geometry to already be constant at the call site, which
     for anything but a literal means `mem2reg` and `sccp` have run.
   }];
