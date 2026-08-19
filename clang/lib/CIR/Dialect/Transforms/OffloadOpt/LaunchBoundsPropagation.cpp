@@ -53,14 +53,14 @@ static std::optional<uint64_t> constBlockSize(const cir::LaunchSite &site) {
 // an unseen launch may use a larger block, and the bound is a hard contract.
 static std::optional<uint64_t>
 maxBlockSize(llvm::ArrayRef<cir::LaunchSite> sites) {
-  uint64_t max = 0;
+  uint64_t maxSize = 0;
   for (const cir::LaunchSite &site : sites) {
     std::optional<uint64_t> size = constBlockSize(site);
     if (!size)
       return std::nullopt;
-    max = std::max(max, *size);
+    maxSize = std::max(maxSize, *size);
   }
-  return max ? std::optional<uint64_t>(max) : std::nullopt;
+  return maxSize ? std::optional<uint64_t>(maxSize) : std::nullopt;
 }
 
 // Only NVPTX for now. HIP carries `amdgpu-flat-work-group-size` on every kernel
@@ -114,12 +114,10 @@ void OffloadLaunchBoundsPropagationPass::runOnOperation() {
 
     // The launch configuration is host-side, so one bound applies to every
     // arch's copy of the kernel even when __CUDA_ARCH__ made the bodies differ.
-    for (cir::FuncOp kernel : binding.deviceKernels) {
-      if (kernel.isDeclaration() || !isNVPTXKernel(kernel))
-        continue;
-      if (setMaxNTID(kernel, *bound, builder))
+    for (cir::FuncOp kernel : binding.deviceKernels)
+      if (!kernel.isDeclaration() && isNVPTXKernel(kernel) &&
+          setMaxNTID(kernel, *bound, builder))
         changed = true;
-    }
   }
 
   if (!changed)
