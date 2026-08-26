@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/IR/SymbolTable.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/IR/CIROpsEnums.h"
 #include "clang/CIR/Dialect/Passes.h"
@@ -23,18 +22,6 @@ using namespace mlir;
 using namespace cir;
 
 namespace {
-
-// A symbol is used outside its own body if any reference to it lives in an op
-// that is not nested within the symbol itself. This matters because a CUDA
-// device stub takes its own address to launch, so it always references itself.
-static bool hasUseOutsideSelf(cir::FuncOp fn, mlir::Operation *scope) {
-  auto uses = mlir::SymbolTable::getSymbolUses(fn, scope);
-  if (!uses)
-    return true; // Uses could not be enumerated: conservatively keep.
-  return llvm::any_of(*uses, [&](const mlir::SymbolTable::SymbolUse &use) {
-    return !fn->isProperAncestor(use.getUser());
-  });
-}
 
 static bool isDeviceKernel(cir::FuncOp fn) {
   cir::CallingConv cc = fn.getCallingConv();
@@ -63,7 +50,7 @@ void OffloadDeadKernelEliminationPass::runOnOperation() {
   for (const auto &binding : table) {
     cir::FuncOp stub = binding.second.hostStub;
     bool stubDead = cir::isLocalLinkage(stub.getLinkage()) &&
-                    !hasUseOutsideSelf(stub, hostModule);
+                    !cir::hasUseOutsideSelf(stub, hostModule);
     if (stubDead) {
       toErase.push_back(stub);
     } else {
@@ -79,7 +66,7 @@ void OffloadDeadKernelEliminationPass::runOnOperation() {
     deviceMod.walk([&](cir::FuncOp fn) {
       if (!isDeviceKernel(fn) || live.contains(fn))
         return;
-      if (!hasUseOutsideSelf(fn, deviceMod))
+      if (!cir::hasUseOutsideSelf(fn, deviceMod))
         toErase.push_back(fn);
     });
   }

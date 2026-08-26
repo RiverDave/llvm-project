@@ -6,9 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/IR/SymbolTable.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
-#include "clang/CIR/Dialect/IR/CIROpsEnums.h"
 #include "clang/CIR/Dialect/Passes.h"
 #include "clang/CIR/Dialect/Transforms/OffloadOpt/KernelBindingTable.h"
 
@@ -21,27 +19,6 @@ using namespace mlir;
 using namespace cir;
 
 namespace {
-
-// The launch sites recorded for a stub are all of them when no other TU can
-// call it and every reference to it is one the table recorded. A reference that
-// is not a launch site of this kernel -- an escaping address, or a call the
-// table did not collect -- may reach the kernel with arguments this pass cannot
-// see. The stub references itself, since it hands its own address to
-// cudaLaunchKernel, so only uses outside its own body are considered.
-static bool allLaunchSitesVisible(cir::FuncOp stub, llvm::StringRef kernelName,
-                                  mlir::Operation *scope) {
-  if (!cir::isLocalLinkage(stub.getLinkage()))
-    return false;
-  auto uses = mlir::SymbolTable::getSymbolUses(stub, scope);
-  if (!uses)
-    return false;
-  return llvm::all_of(*uses, [&](const mlir::SymbolTable::SymbolUse &use) {
-    if (stub->isProperAncestor(use.getUser()))
-      return true;
-    cir::CUDAKernelNameAttr launched = cir::getLaunchedKernel(use.getUser());
-    return launched && launched.getKernelName() == kernelName;
-  });
-}
 
 // The constant every site passes for argument `argIdx`, or null if they
 // disagree or any of them passes a non-constant. Agreement is a property of the
@@ -68,9 +45,7 @@ struct OffloadKernelArgConstantPropagationPass
 };
 
 void OffloadKernelArgConstantPropagationPass::runOnOperation() {
-  cir::OffloadContainerOp container = getOperation();
   cir::KernelBindingTable &table = getAnalysis<cir::KernelBindingTable>();
-  mlir::ModuleOp hostModule = container.getHostModule();
   bool changed = false;
 
   for (const auto &entry : table) {
@@ -81,7 +56,7 @@ void OffloadKernelArgConstantPropagationPass::runOnOperation() {
     // A kernel launched nowhere in this TU says nothing about its arguments.
     if (sites.empty())
       continue;
-    if (!allLaunchSitesVisible(stub, entry.first, hostModule))
+    if (!table.allLaunchSitesVisible(entry.first))
       continue;
 
     for (unsigned i = 0, e = stub.getNumArguments(); i != e; ++i) {

@@ -98,6 +98,12 @@ struct KernelBinding {
 // from here so they cannot drift apart.
 cir::CUDAKernelNameAttr getLaunchedKernel(mlir::Operation *op);
 
+// Whether any reference to `fn` within `scope` lives outside `fn`'s own body. A
+// device stub hands its own address to cudaLaunchKernel, so it always
+// references itself; that self-reference is not a use. Conservatively true when
+// the uses cannot be enumerated.
+bool hasUseOutsideSelf(cir::FuncOp fn, mlir::Operation *scope);
+
 class KernelBindingTable {
 public:
   explicit KernelBindingTable(mlir::Operation *container);
@@ -114,6 +120,12 @@ public:
   llvm::ArrayRef<cir::LaunchSite>
   getLaunchSites(llvm::StringRef kernelName) const;
 
+  // Whether the recorded launch sites of the named kernel are all of them, so a
+  // pass may draw conclusions from them about the kernel itself. False when
+  // another TU can call the stub, when a reference to it is not a launch this
+  // table recorded, or when the name is unbound.
+  bool allLaunchSitesVisible(llvm::StringRef kernelName) const;
+
   bool empty() const { return bindings.empty(); }
   size_t size() const { return bindings.size(); }
   auto begin() const { return bindings.begin(); }
@@ -125,6 +137,9 @@ private:
   // Keys are StringRefs into the `cu.kernel_name` attribute storage, so the
   // table's lifetime is tied to the container IR it was built from.
   llvm::MapVector<llvm::StringRef, KernelBinding> bindings;
+  // The scope the stubs and launch sites live in, so a visibility question
+  // about a binding does not depend on the caller passing the right module.
+  mlir::ModuleOp hostModule;
 };
 
 } // namespace cir
