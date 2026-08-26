@@ -10,6 +10,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "clang/CIR/Dialect/IR/CIRAttrs.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
+#include "clang/CIR/Dialect/IR/CIROpsEnums.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -191,9 +192,42 @@ cir::CUDAKernelNameAttr cir::getLaunchedKernel(mlir::Operation *op) {
       cir::CUDAKernelNameAttr::getMnemonic());
 }
 
+bool cir::hasUseOutsideSelf(cir::FuncOp fn, mlir::Operation *scope) {
+  auto uses = mlir::SymbolTable::getSymbolUses(fn, scope);
+  if (!uses)
+    return true; // Uses could not be enumerated: conservatively assume one.
+  return llvm::any_of(*uses, [&](const mlir::SymbolTable::SymbolUse &use) {
+    return !fn->isProperAncestor(use.getUser());
+  });
+}
+
+// The launch sites recorded for a stub are all of them when no other TU can
+// call it and every reference to it is one the table recorded. A reference that
+// is not a launch site of this kernel -- an escaping address, or a call the
+// table did not collect -- may reach the kernel in a way this table cannot
+// describe. Uses inside the stub's own body are its self-reference.
+bool KernelBindingTable::allLaunchSitesVisible(
+    llvm::StringRef kernelName) const {
+  const KernelBinding *binding = lookup(kernelName);
+  if (!binding)
+    return false;
+  cir::FuncOp stub = binding->hostStub;
+  if (!cir::isLocalLinkage(stub.getLinkage()))
+    return false;
+  auto uses = mlir::SymbolTable::getSymbolUses(stub, hostModule);
+  if (!uses)
+    return false;
+  return llvm::all_of(*uses, [&](const mlir::SymbolTable::SymbolUse &use) {
+    if (stub->isProperAncestor(use.getUser()))
+      return true;
+    cir::CUDAKernelNameAttr launched = cir::getLaunchedKernel(use.getUser());
+    return launched && launched.getKernelName() == kernelName;
+  });
+}
+
 KernelBindingTable::KernelBindingTable(mlir::Operation *container) {
   auto containerOp = mlir::cast<cir::OffloadContainerOp>(container);
-  mlir::ModuleOp hostModule = containerOp.getHostModule();
+  hostModule = containerOp.getHostModule();
 
   hostModule.walk([&](cir::FuncOp hostFn) {
     auto kernelNameAttr = hostFn->getAttrOfType<cir::CUDAKernelNameAttr>(
