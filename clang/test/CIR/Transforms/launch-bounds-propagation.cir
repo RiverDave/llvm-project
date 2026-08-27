@@ -4,64 +4,144 @@
 
 !s32i = !cir.int<s, 32>
 !u32i = !cir.int<u, 32>
+!rec_dim3 = !cir.struct<"dim3" {data !u32i, data !u32i, data !u32i}>
 
-// Single launch with a constant block size: the kernel gets the bound the user
-// could have written as __launch_bounds__(256).
+// Constant block size → nvvm.maxntid.
 module {
   cir.offload.container {
     builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
-      cir.func internal private @stub_single(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_single">} {
-        %0 = cir.get_global @stub_single : !cir.ptr<!cir.func<(!s32i)>>
+      cir.func private @__cudaPushCallConfiguration(!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+      cir.func private @dim3_ctor(!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) func_info<#cir.cxx_ctor<!rec_dim3, custom>>
+      cir.func internal private @stub() attributes {cu.kernel_name = #cir.cu.kernel_name<"kern">} {
         cir.return
       }
-      cir.func @launch_single() {
-        %g = cir.const #cir.int<64> : !u32i
-        %b = cir.const #cir.int<256> : !u32i
+      cir.func @launch() {
+        %g = cir.alloca "g" align(4) : !cir.ptr<!rec_dim3>
+        %b = cir.alloca "b" align(4) : !cir.ptr<!rec_dim3>
         %one = cir.const #cir.int<1> : !u32i
-        %0 = cir.const #cir.int<7> : !s32i
-        cir.call @__cudaPushCallConfiguration(%g, %one, %one, %b, %one, %one) : (!u32i, !u32i, !u32i, !u32i, !u32i, !u32i) -> ()
-        cir.call @stub_single(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_single">} : (!s32i) -> ()
+        %bx = cir.const #cir.int<256> : !u32i
+        cir.call @dim3_ctor(%g, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        cir.call @dim3_ctor(%b, %bx, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        %sh = cir.const #cir.int<0> : !u32i
+        %st = cir.const #cir.ptr<null> : !cir.ptr<!s32i>
+        %gv = cir.load %g : !cir.ptr<!rec_dim3>, !rec_dim3
+        %bv = cir.load %b : !cir.ptr<!rec_dim3>, !rec_dim3
+        %r = cir.call @__cudaPushCallConfiguration(%gv, %bv, %sh, %st) : (!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+        %c = cir.cast int_to_bool %r : !s32i -> !cir.bool
+        cir.if %c {
+        } else {
+          cir.call @stub() {cu.kernel_name = #cir.cu.kernel_name<"kern">} : () -> ()
+        }
         cir.return
       }
-      cir.func private @__cudaPushCallConfiguration(!u32i, !u32i, !u32i, !u32i, !u32i, !u32i)
     }
     builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
-      cir.func @kern_single(%arg0: !s32i) cc(ptx_kernel) {
+      cir.func @kern() cc(ptx_kernel) {
         cir.return
       }
     }
   }
 }
 
-// CHECK-LABEL: cir.func @kern_single
+// CHECK-LABEL: cir.func @kern()
 // CHECK-SAME: cir.nvvm.maxntid = "256"
 
 // -----
 
 !s32i = !cir.int<s, 32>
+!u32i = !cir.int<u, 32>
+!rec_dim3 = !cir.struct<"dim3" {data !u32i, data !u32i, data !u32i}>
 
-// No geometry recorded: nothing is inferred, since an untraced launch may use a
-// larger block than any we can see.
+// Runtime block size → no bound.
 module {
   cir.offload.container {
     builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
-      cir.func internal private @stub_opaque(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_opaque">} {
-        %0 = cir.get_global @stub_opaque : !cir.ptr<!cir.func<(!s32i)>>
+      cir.func private @__cudaPushCallConfiguration(!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+      cir.func private @dim3_ctor(!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) func_info<#cir.cxx_ctor<!rec_dim3, custom>>
+      cir.func internal private @stub() attributes {cu.kernel_name = #cir.cu.kernel_name<"kern">} {
         cir.return
       }
-      cir.func @launch_opaque() {
-        %0 = cir.const #cir.int<7> : !s32i
-        cir.call @stub_opaque(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_opaque">} : (!s32i) -> ()
+      cir.func @launch(%n: !u32i) {
+        %g = cir.alloca "g" align(4) : !cir.ptr<!rec_dim3>
+        %b = cir.alloca "b" align(4) : !cir.ptr<!rec_dim3>
+        %one = cir.const #cir.int<1> : !u32i
+        cir.call @dim3_ctor(%g, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        cir.call @dim3_ctor(%b, %n, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        %sh = cir.const #cir.int<0> : !u32i
+        %st = cir.const #cir.ptr<null> : !cir.ptr<!s32i>
+        %gv = cir.load %g : !cir.ptr<!rec_dim3>, !rec_dim3
+        %bv = cir.load %b : !cir.ptr<!rec_dim3>, !rec_dim3
+        %r = cir.call @__cudaPushCallConfiguration(%gv, %bv, %sh, %st) : (!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+        %c = cir.cast int_to_bool %r : !s32i -> !cir.bool
+        cir.if %c {
+        } else {
+          cir.call @stub() {cu.kernel_name = #cir.cu.kernel_name<"kern">} : () -> ()
+        }
         cir.return
       }
     }
     builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
-      cir.func @kern_opaque(%arg0: !s32i) cc(ptx_kernel) {
+      cir.func @kern() cc(ptx_kernel) {
         cir.return
       }
     }
   }
 }
 
-// CHECK-LABEL: cir.func @kern_opaque
+// CHECK-LABEL: cir.func @kern()
 // CHECK-NOT: cir.nvvm.maxntid
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u32i = !cir.int<u, 32>
+!rec_dim3 = !cir.struct<"dim3" {data !u32i, data !u32i, data !u32i}>
+
+// Two sites: the bound is the larger block.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @__cudaPushCallConfiguration(!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+      cir.func private @dim3_ctor(!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) func_info<#cir.cxx_ctor<!rec_dim3, custom>>
+      cir.func internal private @stub() attributes {cu.kernel_name = #cir.cu.kernel_name<"kern">} {
+        cir.return
+      }
+      cir.func @launch() {
+        %g = cir.alloca "g" align(4) : !cir.ptr<!rec_dim3>
+        %b0 = cir.alloca "b0" align(4) : !cir.ptr<!rec_dim3>
+        %b1 = cir.alloca "b1" align(4) : !cir.ptr<!rec_dim3>
+        %one = cir.const #cir.int<1> : !u32i
+        %bx = cir.const #cir.int<96> : !u32i
+        %sh = cir.const #cir.int<0> : !u32i
+        %st = cir.const #cir.ptr<null> : !cir.ptr<!s32i>
+        cir.call @dim3_ctor(%g, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        cir.call @dim3_ctor(%b0, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        %gv = cir.load %g : !cir.ptr<!rec_dim3>, !rec_dim3
+        %bv0 = cir.load %b0 : !cir.ptr<!rec_dim3>, !rec_dim3
+        %r0 = cir.call @__cudaPushCallConfiguration(%gv, %bv0, %sh, %st) : (!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+        %c0 = cir.cast int_to_bool %r0 : !s32i -> !cir.bool
+        cir.if %c0 {
+        } else {
+          cir.call @stub() {cu.kernel_name = #cir.cu.kernel_name<"kern">} : () -> ()
+        }
+        cir.call @dim3_ctor(%b1, %bx, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        %bv1 = cir.load %b1 : !cir.ptr<!rec_dim3>, !rec_dim3
+        %r1 = cir.call @__cudaPushCallConfiguration(%gv, %bv1, %sh, %st) : (!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
+        %c1 = cir.cast int_to_bool %r1 : !s32i -> !cir.bool
+        cir.if %c1 {
+        } else {
+          cir.call @stub() {cu.kernel_name = #cir.cu.kernel_name<"kern">} : () -> ()
+        }
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern() cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern()
+// CHECK-SAME: cir.nvvm.maxntid = "96"
