@@ -63,28 +63,30 @@ maxBlockSize(llvm::ArrayRef<cir::LaunchSite> sites) {
   return maxSize ? std::optional<uint64_t>(maxSize) : std::nullopt;
 }
 
-// Only NVPTX for now. HIP carries `amdgpu-flat-work-group-size` on every kernel
-// already, so propagating there is an overwrite rather than an addition and
-// needs its own provenance story.
-static bool isNVPTXKernel(cir::FuncOp fn) {
-  return fn.getCallingConv() == cir::CallingConv::PTXKernel;
-}
-
-// Tighten `cir.nvvm.maxntid`, never loosen it: a user's __launch_bounds__ is a
-// promise we may sharpen but must not widen. The attribute name has to match
-// what CIRGen writes in Targets/NVPTX.cpp or the two mechanisms drift apart.
-static bool setMaxNTID(cir::FuncOp kernel, uint64_t bound,
-                       mlir::OpBuilder &builder) {
-  std::string name = ("cir." + llvm::NVVMAttr::MaxNTID).str();
-  if (auto existing = kernel->getAttrOfType<mlir::StringAttr>(name)) {
-    uint64_t prev;
-    if (!llvm::to_integer(existing.getValue(), prev, 10))
-      return false;
-    if (prev <= bound)
-      return false;
+// Stamp the target launch-bound attr. NVPTX only for now: HIP already carries
+// `amdgpu-flat-work-group-size` on every kernel, so propagating there is an
+// overwrite rather than an addition and needs its own provenance story.
+// Tighten, never loosen: a user's __launch_bounds__ is a promise we may
+// sharpen but must not widen. The NVPTX attr name has to match what CIRGen
+// writes in Targets/NVPTX.cpp or the two mechanisms drift apart.
+static bool setLaunchBound(cir::FuncOp kernel, uint64_t bound,
+                           mlir::OpBuilder &builder) {
+  switch (kernel.getCallingConv()) {
+  case cir::CallingConv::PTXKernel: {
+    std::string name = ("cir." + llvm::NVVMAttr::MaxNTID).str();
+    if (auto existing = kernel->getAttrOfType<mlir::StringAttr>(name)) {
+      uint64_t prev;
+      if (!llvm::to_integer(existing.getValue(), prev, 10))
+        return false;
+      if (prev <= bound)
+        return false;
+    }
+    kernel->setAttr(name, builder.getStringAttr(llvm::utostr(bound)));
+    return true;
   }
-  kernel->setAttr(name, builder.getStringAttr(llvm::utostr(bound)));
-  return true;
+  default:
+    llvm_unreachable("launch-bound propagation is only implemented for NVPTX");
+  }
 }
 
 struct OffloadLaunchBoundsPropagationPass
@@ -115,8 +117,7 @@ void OffloadLaunchBoundsPropagationPass::runOnOperation() {
     // The launch configuration is host-side, so one bound applies to every
     // arch's copy of the kernel even when __CUDA_ARCH__ made the bodies differ.
     for (cir::FuncOp kernel : binding.deviceKernels)
-      if (!kernel.isDeclaration() && isNVPTXKernel(kernel) &&
-          setMaxNTID(kernel, *bound, builder))
+      if (!kernel.isDeclaration() && setLaunchBound(kernel, *bound, builder))
         changed = true;
   }
 
