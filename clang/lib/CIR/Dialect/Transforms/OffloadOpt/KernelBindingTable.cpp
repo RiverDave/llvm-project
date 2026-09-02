@@ -11,6 +11,7 @@
 #include "clang/CIR/Dialect/IR/CIRAttrs.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/IR/CIROpsEnums.h"
+#include "clang/CIR/Dialect/IR/CIRTypes.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -30,9 +31,9 @@ static mlir::TypedAttr asConst(mlir::Value v) {
 // runtime is constructed, and the legacy `cudaConfigureCall` /
 // `hipConfigureCall` reach errorNYI("Emit Stub Body Legacy").
 //
-// The argument count is part of the test because the geometry accessors index
-// the operands directly; without it, only the name stands between a same-named
-// declaration and a read past the end.
+// The name and supported operand count identify the call. Before ABI lowering
+// it has four logical operands; x86_64 SysV lowering flattens both dim3 values
+// into two fields, producing six operands.
 static bool isPushCallConfiguration(cir::CallOp call) {
   std::optional<llvm::StringRef> callee = call.getCallee();
   if (!callee)
@@ -43,7 +44,8 @@ static bool isPushCallConfiguration(cir::CallOp call) {
   if (*callee != "__cudaPushCallConfiguration" &&
       *callee != "__hipPushCallConfiguration")
     return false;
-  return call.getArgOperands().size() == 4;
+  unsigned n = call.getArgOperands().size();
+  return n == 4 || n == 6;
 }
 
 // CIRGen guards a launch with the result of the push-call-configuration call:
@@ -84,16 +86,18 @@ static bool constructsRecord(cir::CallOp call, mlir::Type recordType) {
   return ctor && ctor.getType() == recordType;
 }
 
-// A dim3 argument of the push call is a load of a stack temporary that a
-// constructor filled in:
+// Recover a dim3's components by walking its loaded value back to the stack
+// slot filled by its constructor:
 //
 //   %t = cir.alloca "agg.tmp0" : !cir.ptr<!rec_dim3>
 //   cir.call @_ZN4dim3C1Ejjj(%t, %x, %y, %z)
 //   %d = cir.load %t
 //
-// The constructor is found through the slot, so the components belong to the
-// temporary this launch reads rather than to any dim3 in the function.
+// Looking through the slot ties the constructor operands to the exact dim3
+// value used by this launch.
 static cir::LaunchSite::Dim3 traceDim3(mlir::Value dim) {
+  if (!dim)
+    return {};
   auto load = dim.getDefiningOp<cir::LoadOp>();
   if (!load)
     return {};
@@ -121,6 +125,83 @@ static cir::LaunchSite::Dim3 traceDim3(mlir::Value dim) {
   if (args.size() != 4 || args[0] != slot)
     return {};
   return {args[1], args[2], args[3]};
+}
+
+// Recover the record stored into the common coerce slot from which the two
+// flattened fields were loaded. This is the inverse of the x86_64 SysV
+// CallConvLowering pattern for dim3; it deliberately handles no other layout.
+static mlir::Value recordFromCoercedFields(mlir::Value first,
+                                           mlir::Value second) {
+  auto firstLoad = first.getDefiningOp<cir::LoadOp>();
+  auto secondLoad = second.getDefiningOp<cir::LoadOp>();
+  auto firstField = firstLoad
+                        ? firstLoad.getAddr().getDefiningOp<cir::GetMemberOp>()
+                        : nullptr;
+  auto secondField =
+      secondLoad ? secondLoad.getAddr().getDefiningOp<cir::GetMemberOp>()
+                 : nullptr;
+  if (!firstField || !secondField || firstField.getIndex() != 0 ||
+      secondField.getIndex() != 1 ||
+      firstField.getAddr() != secondField.getAddr())
+    return {};
+
+  cir::StoreOp rec;
+  for (mlir::Operation *user : firstField.getAddr().getUsers()) {
+    auto cast = mlir::dyn_cast<cir::CastOp>(user);
+    if (!cast || cast.getKind() != cir::CastKind::bitcast)
+      continue;
+    for (mlir::Operation *castUser : cast.getResult().getUsers()) {
+      auto store = mlir::dyn_cast<cir::StoreOp>(castUser);
+      if (!store || store.getAddr() != cast.getResult() ||
+          !mlir::isa<cir::RecordType>(store.getValue().getType()))
+        continue;
+      // Users are unordered, so a second store leaves the one reaching the
+      // load undecided; report no record instead.
+      if (rec)
+        return {};
+      rec = store;
+    }
+  }
+  if (!rec || rec->getBlock() != firstLoad->getBlock() ||
+      rec->getBlock() != secondLoad->getBlock() ||
+      !rec->isBeforeInBlock(firstLoad) || !rec->isBeforeInBlock(secondLoad))
+    return {};
+  return rec.getValue();
+}
+
+// Recover grid (0) or block (1) from the push call. Before ABI lowering the
+// operand is the dim3 record load and traceDim3 can follow it directly. After
+// x86_64 SysV lowering the record has been stored into a {i64, i32} coerce
+// slot and the call receives loads of its two fields. Walk those fields back
+// to their common slot, recover the stored record, then let traceDim3 continue
+// back to the constructor and its x, y and z operands.
+//
+// This ABI-specific detour is temporary. Once the merge pipeline consumes CIR
+// before CallConvLowering, launch geometry should be captured there and this
+// six-operand path can be removed.
+static cir::LaunchSite::Dim3 tracePushDim(cir::CallOp call,
+                                          unsigned logicalDimIndex) {
+  assert(logicalDimIndex < 2 &&
+         "push configuration has only grid and block dims");
+  mlir::OperandRange ops = call.getArgOperands();
+  if (ops.size() == 4)
+    return traceDim3(ops[logicalDimIndex]);
+  if (ops.size() != 6)
+    return {};
+  unsigned firstField = logicalDimIndex * 2;
+  return traceDim3(
+      recordFromCoercedFields(ops[firstField], ops[firstField + 1]));
+}
+
+// Shared memory (0) and stream (1) are the two trailing operands in both
+// supported call shapes and are never subject to dim3 recovery.
+static mlir::Value pushConfigScalar(cir::CallOp call, unsigned scalarIndex) {
+  assert(scalarIndex < 2 &&
+         "push configuration has only shared-memory and stream scalars");
+  mlir::OperandRange ops = call.getArgOperands();
+  if (ops.size() != 4 && ops.size() != 6)
+    return {};
+  return ops[ops.size() - 2 + scalarIndex];
 }
 
 llvm::StringRef cir::LaunchSite::getKernelName() const {
@@ -151,23 +232,23 @@ bool cir::LaunchSite::Dim3::isFullyConstant() const {
   return constX() && constY() && constZ();
 }
 
-// Push call operands: grid, block, shared memory, stream.
+// Logical push-config operands: grid, block, shared memory, stream.
 cir::LaunchSite::Dim3 cir::LaunchSite::getGridDim() const {
   if (!hasGeometry())
     return {};
-  return traceDim3(cir::CallOp(pushConfigCall).getArgOperands()[0]);
+  return tracePushDim(cir::CallOp(pushConfigCall), 0);
 }
 
 cir::LaunchSite::Dim3 cir::LaunchSite::getBlockDim() const {
   if (!hasGeometry())
     return {};
-  return traceDim3(cir::CallOp(pushConfigCall).getArgOperands()[1]);
+  return tracePushDim(cir::CallOp(pushConfigCall), 1);
 }
 
 mlir::Value cir::LaunchSite::getSharedMemBytes() const {
   if (!hasGeometry())
     return {};
-  return cir::CallOp(pushConfigCall).getArgOperands()[2];
+  return pushConfigScalar(cir::CallOp(pushConfigCall), 0);
 }
 
 mlir::TypedAttr cir::LaunchSite::getConstSharedMem() const {
@@ -177,7 +258,7 @@ mlir::TypedAttr cir::LaunchSite::getConstSharedMem() const {
 mlir::Value cir::LaunchSite::getStream() const {
   if (!hasGeometry())
     return {};
-  return cir::CallOp(pushConfigCall).getArgOperands()[3];
+  return pushConfigScalar(cir::CallOp(pushConfigCall), 1);
 }
 
 bool cir::LaunchSite::isDefaultStream() const {
