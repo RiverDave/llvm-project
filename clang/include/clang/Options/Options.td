@@ -3530,6 +3530,12 @@ defm clangir : BoolFOption<"clangir",
 def clangir_offload_merge : Flag<["--"], "clangir-offload-merge">,
   Visibility<[ClangOption]>,
   HelpText<"Merge serialized ClangIR host/device offload modules before backend compilation.">;
+def fcir_infer_launch_bounds : Flag<["-"], "fcir-infer-launch-bounds">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Infer device launch bounds in the ClangIR offload merge pipeline">;
+def fno_cir_infer_launch_bounds : Flag<["-"], "fno-cir-infer-launch-bounds">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Do not infer device launch bounds in the ClangIR offload merge pipeline">;
 def emit_cir : Flag<["-"], "emit-cir">, Visibility<[ClangOption, CC1Option]>,
   Group<Action_Group>, HelpText<"Build ASTs and then lower to ClangIR">;
 /// ClangIR-specific options - END
