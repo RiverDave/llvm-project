@@ -40,11 +40,19 @@ module {
         cir.return
       }
     }
+    builtin.module @device_1 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern() cc(amdgpu_kernel) attributes {"cir.amdgpu-flat-work-group-size" = "1,1024"} {
+        cir.return
+      }
+    }
   }
 }
 
 // CHECK-LABEL: cir.func @kern()
 // CHECK-SAME: cir.nvvm.maxntid = "256"
+// CHECK-LABEL: cir.func @kern() cc(amdgpu_kernel)
+// CHECK-SAME: "cir.amdgpu-flat-work-group-size" = "1,1024"
+// CHECK-NOT: cir.nvvm.maxntid
 
 // -----
 
