@@ -1,15 +1,17 @@
 // RUN: cir-opt %s -split-input-file \
-// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-geometry-specialization{minctasm=4}))" \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-geometry-specialization))" \
 // RUN:   | FileCheck %s
 
-// When `minctasm` is set, LSGS emits nvvm.minctasm alongside reqntid on a
-// kernel it exact-specializes. Default (0) emits none.
+// Default (no minctasm): LSGS emits reqntid only. The .minnctapersm lever is
+// driven by cir-offload-merge --lsgs-minctasm=M (factory param), not a pass
+// option here.
 
 !s32i = !cir.int<s, 32>
 !u32i = !cir.int<u, 32>
 !rec_dim3 = !cir.struct<"dim3" {data !u32i, data !u32i, data !u32i}>
 
-// Constant 1D block (256,1,1), all launches visible, minctasm=4 requested.
+// Constant 1D block (256,1,1), all launches visible: reqntid emitted, no
+// minctasm (default), no maxntid.
 module {
   cir.offload.container {
     builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
@@ -47,56 +49,7 @@ module {
   }
 }
 
-// minctasm=4 requested -> both reqntid and minctasm emitted.
-// CHECK-LABEL: cir.func @kern() cc(ptx_kernel) attributes {cir.nvvm.reqntid = "256,1,1", cir.nvvm.minctasm = "4"
-// CHECK-NOT: cir.nvvm.maxntid
-
-// -----
-
-!s32i = !cir.int<s, 32>
-!u32i = !cir.int<u, 32>
-!rec_dim3 = !cir.struct<"dim3" {data !u32i, data !u32i, data !u32i}>
-
-// Feasibility guard: minctasm=8 with block 256 would request 2048 threads/SM,
-// beyond the 1024 guard -> minctasm suppressed (reqntid still emitted).
-module {
-  cir.offload.container {
-    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
-      cir.func private @__cudaPushCallConfiguration(!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
-      cir.func private @dim3_ctor(!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) func_info<#cir.cxx_ctor<!rec_dim3, custom>>
-      cir.func internal private @stub() attributes {cu.kernel_name = #cir.cu.kernel_name<"kern">} {
-        cir.return
-      }
-      cir.func @launch() {
-        %g = cir.alloca "g" align(4) : !cir.ptr<!rec_dim3>
-        %b = cir.alloca "b" align(4) : !cir.ptr<!rec_dim3>
-        %one = cir.const #cir.int<1> : !u32i
-        %bx = cir.const #cir.int<256> : !u32i
-        cir.call @dim3_ctor(%g, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
-        cir.call @dim3_ctor(%b, %bx, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
-        %sh = cir.const #cir.int<0> : !u32i
-        %st = cir.const #cir.ptr<null> : !cir.ptr<!s32i>
-        %gv = cir.load %g : !cir.ptr<!rec_dim3>, !rec_dim3
-        %bv = cir.load %b : !cir.ptr<!rec_dim3>, !rec_dim3
-        %r = cir.call @__cudaPushCallConfiguration(%gv, %bv, %sh, %st) : (!rec_dim3, !rec_dim3, !u32i, !cir.ptr<!s32i>) -> !s32i
-        %c = cir.cast int_to_bool %r : !s32i -> !cir.bool
-        cir.if %c {
-        } else {
-          cir.call @stub() {cu.kernel_name = #cir.cu.kernel_name<"kern">} : () -> ()
-        }
-        cir.return
-      }
-    }
-    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
-      cir.func @kern() cc(ptx_kernel) {
-        %nx = cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.ntid.x" : () -> !u32i
-        cir.return
-      }
-    }
-  }
-}
-
-// M=8 * B=256 = 2048 > 1024 -> minctasm suppressed, reqntid present, no maxntid.
+// reqntid emitted, minctasm absent by default, no maxntid.
 // CHECK-LABEL: cir.func @kern() cc(ptx_kernel) attributes {cir.nvvm.reqntid = "256,1,1"
 // CHECK-NOT: cir.nvvm.minctasm
 // CHECK-NOT: cir.nvvm.maxntid
