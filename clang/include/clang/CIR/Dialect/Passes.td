@@ -380,4 +380,41 @@ def OffloadLaunchBoundsPropagation
   let dependentDialects = ["cir::CIRDialect"];
 }
 
+//===----------------------------------------------------------------------===//
+// Launch geometry specialization.
+//
+// When every visible launch of a kernel uses the same compile-time block shape,
+// the device kernel's ntid.{x,y,z} reads are replaced with that constant and
+// the kernel carries nvvm.reqntid, so ptxas treats the exact CTA shape as a
+// hard contract. In-place only (no cloning): an exact shape is stamped only
+// when the pipeline can see every launch, so there is no fallback to route.
+// Because PTX forbids maxntid together with reqntid, this pass must run before
+// launch-bounds propagation, which must in turn skip kernels that now carry
+// reqntid.
+def OffloadLaunchGeometrySpecialization
+    : Pass<"cir-offload-launch-geometry-specialization",
+           "cir::OffloadContainerOp"> {
+  let summary = "Replace device kernel ntid reads with a constant exact block shape";
+  let description = [{
+    Runs over a `cir.offload.container`. When every launch of a kernel is
+    visible and every visible launch uses the same constant block triple
+    (component-wise, not just equal thread count), each `ntid.{x,y,z}` read in
+    the device kernel is replaced by that component and the kernel is
+    annotated `nvvm.reqntid = "bx,by,bz"`.
+
+    The exact-shape proof is conservative: any site whose geometry is not
+    traced to a compile-time value, any disagreement between sites, a
+    device-side use of the kernel (dynamic parallelism, address-taken), or an
+    existing incompatible `reqntid` disqualifies the kernel. A user-authored
+    `maxntid` is also a disqualifier, since PTX forbids `maxntid` together with
+    `reqntid`.
+
+    No cloning or dispatch is performed: an exact shape is only stamped when
+    every launch the pipeline can see uses it, so there is no fallback launch
+    of a different shape to route.
+  }];
+  let constructor = "mlir::createOffloadLaunchGeometrySpecializationPass()";
+  let dependentDialects = ["cir::CIRDialect"];
+}
+
 #endif // CLANG_CIR_DIALECT_PASSES_TD

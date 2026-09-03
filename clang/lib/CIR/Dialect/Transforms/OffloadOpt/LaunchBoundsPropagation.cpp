@@ -116,9 +116,16 @@ void OffloadLaunchBoundsPropagationPass::runOnOperation() {
 
     // The launch configuration is host-side, so one bound applies to every
     // arch's copy of the kernel even when __CUDA_ARCH__ made the bodies differ.
-    for (cir::FuncOp kernel : binding.deviceKernels)
+    for (cir::FuncOp kernel : binding.deviceKernels) {
+      // A kernel already carrying an exact-shape reqntid (stamped by launch
+      // geometry specialization) must not also get a maxntid: PTX forbids the
+      // two on the same entry.
+      std::string reqName = ("cir." + llvm::NVVMAttr::ReqNTID).str();
+      if (kernel->hasAttr(reqName))
+        continue;
       if (!kernel.isDeclaration() && setLaunchBound(kernel, *bound, builder))
         changed = true;
+    }
   }
 
   if (!changed)
