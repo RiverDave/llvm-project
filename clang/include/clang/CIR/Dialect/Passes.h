@@ -62,7 +62,8 @@ std::unique_ptr<Pass> createMaterializeASTFactsPass();
 std::unique_ptr<Pass> createOffloadDeadKernelEliminationPass();
 std::unique_ptr<Pass> createOffloadKernelArgConstantPropagationPass();
 std::unique_ptr<Pass> createOffloadLaunchBoundsPropagationPass();
-std::unique_ptr<Pass> createOffloadLaunchGeometrySpecializationPass();
+std::unique_ptr<Pass>
+createOffloadLaunchGeometrySpecializationPass(unsigned minCtasPerSm = 0);
 std::unique_ptr<Pass> createGotoSolverPass();
 std::unique_ptr<Pass> createIdiomRecognizerPass();
 std::unique_ptr<Pass> createLibOptPass();

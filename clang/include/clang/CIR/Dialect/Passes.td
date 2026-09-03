@@ -398,12 +398,19 @@ def OffloadLaunchGeometrySpecialization
     the device kernel is replaced by that component and the kernel is
     annotated `nvvm.reqntid = "bx,by,bz"`.
 
+    When `minctasm` is set to a positive value, the kernel is additionally
+    annotated `nvvm.minctasm = "M"` (PTX `.minnctapersm M`), which asks ptxas
+    to fit at least M CTAs per SM and is the forcing leverage that raises
+    register-constrained occupancy. This is opt-in and never inferred from a
+    static rule: choosing a profitable M requires ptxas-feedback /
+    runtime evidence, so the default does not emit it.
+
     The exact-shape proof is conservative: any site whose geometry is not
     traced to a compile-time value, any disagreement between sites, a
     device-side use of the kernel (dynamic parallelism, address-taken), or an
     existing incompatible `reqntid` disqualifies the kernel. A user-authored
     `maxntid` is also a disqualifier, since PTX forbids `maxntid` together with
-    `reqntid`.
+    `reqntid`; `.minctasm` is compatible with `reqntid`.
 
     No cloning or dispatch is performed: an exact shape is only stamped when
     every launch the pipeline can see uses it, so there is no fallback launch
@@ -411,6 +418,12 @@ def OffloadLaunchGeometrySpecialization
   }];
   let constructor = "mlir::createOffloadLaunchGeometrySpecializationPass()";
   let dependentDialects = ["cir::CIRDialect"];
+  let options = [
+    Option<"minCtasPerSm", "minctasm", "unsigned",
+           /*default=*/"0",
+           "Emit nvvm.minctasm = M (PTX .minnctapersm M) alongside reqntid. "
+           "0 (default) emits none.">,
+  ];
 }
 
 #endif // CLANG_CIR_DIALECT_PASSES_TD

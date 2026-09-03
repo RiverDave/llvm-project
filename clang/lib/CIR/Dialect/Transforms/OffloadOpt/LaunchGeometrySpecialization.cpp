@@ -239,6 +239,22 @@ void OffloadLaunchGeometrySpecializationPass::runOnOperation() {
           llvm::utostr((*shape)[2])}, ",");
       kernel->setAttr(reqName, builder.getStringAttr(value));
       changed = true;
+
+      // Opt-in .minnctapersm forcing. Never inferred; only emitted when the
+      // pass option requests a specific M. Guard M*B against an obviously
+      // infeasible residency (ptxas safely ignores an unattainable M, but a
+      // request beyond 1024 threads/SM is never useful on sm_86/sm_90 and
+      // would otherwise risk a launch contract ptxas rejects). The choice of a
+      // profitable M is a ptxas-feedback / runtime decision done outside the
+      // pass; the default (0) emits nothing.
+      if (minCtasPerSm > 0) {
+        uint64_t threadsPerBlock =
+            (*shape)[0] * (*shape)[1] * (*shape)[2];
+        if (minCtasPerSm * threadsPerBlock <= 1024) {
+          std::string minName = ("cir." + llvm::NVVMAttr::MinCTASm).str();
+          kernel->setAttr(minName, builder.getStringAttr(llvm::utostr(minCtasPerSm)));
+        }
+      }
     }
   }
 
@@ -249,6 +265,8 @@ void OffloadLaunchGeometrySpecializationPass::runOnOperation() {
 } // namespace
 
 std::unique_ptr<Pass>
-mlir::createOffloadLaunchGeometrySpecializationPass() {
-  return std::make_unique<OffloadLaunchGeometrySpecializationPass>();
+mlir::createOffloadLaunchGeometrySpecializationPass(unsigned minCtasPerSm) {
+  auto pass = std::make_unique<OffloadLaunchGeometrySpecializationPass>();
+  pass->minCtasPerSm = minCtasPerSm;
+  return pass;
 }
