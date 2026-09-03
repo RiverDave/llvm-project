@@ -79,28 +79,93 @@ commonBlockShape(llvm::ArrayRef<cir::LaunchSite> sites) {
   return common ? std::optional<std::array<uint64_t, 3>>(common) : std::nullopt;
 }
 
+// The mangled fresh blockDim helper names. Real device CIR reads `blockDim`
+// through the always-inline `__cuda_builtin_blockDim_t::__fetch_builtin_{x,y,z}`
+// helper, which internally reads the `ntid.{x,y,z}` special register. The
+// helpers are `linkonce_odr` and shared across kernels, so the pass must NOT
+// rewrite their bodies; it replaces the per-call result in the kernel body,
+// leaving the shared helper (and any other kernel that reads it) untouched.
+static StringRef blockDimFetchAxis(cir::CallOp op) {
+  if (auto callee = op.getCalleeAttr(); callee) {
+    StringRef name = callee.getValue();
+    StringRef memb = "__cuda_builtin_blockDim_t17__fetch_builtin_";
+    size_t pos = name.find(memb);
+    if (pos != StringRef::npos) {
+      StringRef rest = name.drop_front(pos + memb.size());
+      if (rest.starts_with("x"))
+        return "x";
+      if (rest.starts_with("y"))
+        return "y";
+      if (rest.starts_with("z"))
+        return "z";
+    }
+  }
+  return "";
+}
+
 // Replace every read of the named geometry special register in `kernel` with a
-// `cir.const` carrying the given value, reusing the intrinsic's result type so
-// any downstream zext/sext/cast in the original IR stays correct.
+// `cir.const` carrying the given value, reusing the result type so any
+// downstream zext/sext/cast in the original IR stays correct. Also replaces the
+// result of a `blockDim_t::__fetch_builtin_{x,y,z}` call, which is how real
+// device CIR materializes `blockDim.{x,y,z}` at the call site.
 static bool substituteGeometryRead(cir::FuncOp kernel, StringRef sreg,
                                    uint64_t value) {
   bool changed = false;
-  kernel.walk([&](cir::LLVMIntrinsicCallOp op) {
-    if (op.getIntrinsicName() != sreg)
-      return;
-    if (op->getNumResults() != 1)
-      return;
-    mlir::Type resTy = op->getResultTypes()[0];
+
+  auto replaceWithConst = [&](mlir::Value result, mlir::Type resTy,
+                              mlir::Operation *op) {
     unsigned width = 32;
     if (auto intTy = mlir::dyn_cast<cir::IntType>(resTy))
       width = intTy.getWidth();
     auto attr = cir::IntAttr::get(resTy, llvm::APInt(width, value));
     mlir::OpBuilder builder(op);
     auto constant = builder.create<cir::ConstantOp>(op->getLoc(), attr);
-    op.getResult().replaceAllUsesWith(constant);
-    op.erase();
+    result.replaceAllUsesWith(constant);
+    op->erase();
     changed = true;
+  };
+
+  kernel.walk([&](cir::LLVMIntrinsicCallOp op) {
+    if (op.getIntrinsicName() != sreg)
+      return;
+    if (op->getNumResults() != 1)
+      return;
+    replaceWithConst(op.getResult(), op->getResultTypes()[0], op);
   });
+
+  // Handle the alias call path: `blockDim.x` is materialized as a call to the
+  // shared `__fetch_builtin_x` helper rather than a direct intrinsic, depending
+  // on the CIRGen / lowering stage. Only replace calls whose callee is the
+  // blockDim_t fetch helper for the matching axis; never rewrite the helper
+  // body, never touch blockIdx/gridDim/threadIdx fetch helpers.
+  if (sreg == "nvvm.read.ptx.sreg.ntid.x") {
+    kernel.walk([&](cir::CallOp op) {
+      if (blockDimFetchAxis(op) != "x")
+        return;
+      if (op->getNumResults() != 1)
+        return;
+      replaceWithConst(op.getResult(), op->getResultTypes()[0], op);
+    });
+  }
+  if (sreg == "nvvm.read.ptx.sreg.ntid.y") {
+    kernel.walk([&](cir::CallOp op) {
+      if (blockDimFetchAxis(op) != "y")
+        return;
+      if (op->getNumResults() != 1)
+        return;
+      replaceWithConst(op.getResult(), op->getResultTypes()[0], op);
+    });
+  }
+  if (sreg == "nvvm.read.ptx.sreg.ntid.z") {
+    kernel.walk([&](cir::CallOp op) {
+      if (blockDimFetchAxis(op) != "z")
+        return;
+      if (op->getNumResults() != 1)
+        return;
+      replaceWithConst(op.getResult(), op->getResultTypes()[0], op);
+    });
+  }
+
   return changed;
 }
 
