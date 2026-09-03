@@ -64,6 +64,12 @@ llvm::cl::opt<bool> DisableLaunchBoundsPropagation(
     llvm::cl::desc("Disable launch-bound inference from host launch sites"),
     llvm::cl::cat(CIROffloadMergeCategory));
 
+llvm::cl::opt<bool> DisableLaunchGeometrySpecialization(
+    "disable-launch-geometry-specialization",
+    llvm::cl::desc("Disable exact-shape geometry specialization from host "
+                   "launch sites"),
+    llvm::cl::cat(CIROffloadMergeCategory));
+
 llvm::cl::list<std::string>
     InputFileNames("input",
                    llvm::cl::desc("Input CIR file. Can be specified multiple "
@@ -334,6 +340,11 @@ int runOffloadOptPasses(mlir::ModuleOp module) {
 
   containerPM.addPass(mlir::createOffloadDeadKernelEliminationPass());
   containerPM.addPass(mlir::createOffloadKernelArgConstantPropagationPass());
+  // Geometry specialization must precede launch-bounds propagation: PTX forbids
+  // maxntid together with reqntid, so once a kernel carries reqntid the
+  // launch-bounds pass must leave it alone.
+  if (!DisableLaunchGeometrySpecialization)
+    containerPM.addPass(mlir::createOffloadLaunchGeometrySpecializationPass());
   if (!DisableLaunchBoundsPropagation)
     containerPM.addPass(mlir::createOffloadLaunchBoundsPropagationPass());
 
