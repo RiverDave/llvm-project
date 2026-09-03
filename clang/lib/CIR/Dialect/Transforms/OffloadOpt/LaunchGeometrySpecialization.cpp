@@ -172,7 +172,15 @@ static bool substituteGeometryRead(cir::FuncOp kernel, StringRef sreg,
 struct OffloadLaunchGeometrySpecializationPass
     : public impl::OffloadLaunchGeometrySpecializationBase<
           OffloadLaunchGeometrySpecializationPass> {
+  OffloadLaunchGeometrySpecializationPass(unsigned minCtasPerSm)
+      : minCtasPerSm(minCtasPerSm) {}
   void runOnOperation() override;
+
+private:
+  // Opt-in .minnctapersm target (0 = none). Passed via the factory so the pass
+  // body stays option-free (matching CallConvLowering); selecting a profitable
+  // M is a ptxas-feedback / runtime decision done outside the pass.
+  unsigned minCtasPerSm = 0;
 };
 
 void OffloadLaunchGeometrySpecializationPass::runOnOperation() {
@@ -266,7 +274,6 @@ void OffloadLaunchGeometrySpecializationPass::runOnOperation() {
 
 std::unique_ptr<Pass>
 mlir::createOffloadLaunchGeometrySpecializationPass(unsigned minCtasPerSm) {
-  auto pass = std::make_unique<OffloadLaunchGeometrySpecializationPass>();
-  pass->minCtasPerSm = minCtasPerSm;
-  return pass;
+  return std::make_unique<OffloadLaunchGeometrySpecializationPass>(
+      minCtasPerSm);
 }
