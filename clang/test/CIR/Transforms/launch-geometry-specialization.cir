@@ -47,11 +47,10 @@ module {
   }
 }
 
-// CHECK-LABEL: cir.func @kern()
+// CHECK-LABEL: cir.func @kern() cc(ptx_kernel) attributes {cir.nvvm.reqntid = "256,1,1"}
 // CHECK: %[[X:.*]] = cir.const #cir.int<256> : !u32i
 // CHECK: %[[Y:.*]] = cir.const #cir.int<1> : !u32i
 // CHECK: %[[Z:.*]] = cir.const #cir.int<1> : !u32i
-// CHECK-SAME: cir.nvvm.reqntid = "256,1,1"
 // CHECK-NOT: cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.ntid
 
 // -----
