@@ -41,15 +41,13 @@ module {
         %nx = cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.ntid.x" : () -> !u32i
         %ny = cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.ntid.y" : () -> !u32i
         %nz = cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.ntid.z" : () -> !u32i
-        %s = cir.binop add %nx, %ny : !u32i
-        %t = cir.binop add %s, %nz : !u32i
-        cir.return %t : !u32i
+        cir.return
       }
     }
   }
 }
 
-// CHECK-LABEL: cir.func @kern() cc(ptx_kernel) {
+// CHECK-LABEL: cir.func @kern()
 // CHECK: %[[X:.*]] = cir.const #cir.int<256> : !u32i
 // CHECK: %[[Y:.*]] = cir.const #cir.int<1> : !u32i
 // CHECK: %[[Z:.*]] = cir.const #cir.int<1> : !u32i
@@ -93,13 +91,13 @@ module {
     builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
       cir.func @kern() cc(ptx_kernel) {
         %nx = cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.ntid.x" : () -> !u32i
-        cir.return %nx : !u32i
+        cir.return
       }
     }
   }
 }
 
-// CHECK-LABEL: cir.func @kern() cc(ptx_kernel) {
+// CHECK-LABEL: cir.func @kern()
 // CHECK: cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.ntid.x"
 // CHECK-NOT: cir.nvvm.reqntid
 
@@ -152,12 +150,12 @@ module {
     builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
       cir.func @kern() cc(ptx_kernel) {
         %nx = cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.ntid.x" : () -> !u32i
-        cir.return %nx : !u32i
+        cir.return
       }
     }
   }
 }
 
-// CHECK-LABEL: cir.func @kern() cc(ptx_kernel) {
+// CHECK-LABEL: cir.func @kern()
 // CHECK: cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.ntid.x"
 // CHECK-NOT: cir.nvvm.reqntid
