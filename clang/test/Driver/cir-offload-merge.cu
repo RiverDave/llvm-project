@@ -36,6 +36,13 @@
 // MERGE: "-cc1"{{.*}} "-emit-obj"{{.*}} "-fcuda-include-gpubinary" "[[DEV_FATBIN]]"{{.*}} "-x" "cir" "[[HOST_SPLIT]]"
 
 // RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
+// RUN:   --cuda-gpu-arch=sm_80 -nocudainc -nocudalib \
+// RUN:   --clangir-offload-merge -fno-cir-infer-launch-bounds -c %s 2>&1 \
+// RUN: | FileCheck %s --check-prefix=NO-LAUNCH-BOUNDS
+
+// NO-LAUNCH-BOUNDS: "{{.*}}cir-offload-merge{{(\.exe)?}}" "-combine" "-disable-launch-bounds-propagation" "-targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda-unknown-sm_80"
+
+// RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
 // RUN:   --cuda-gpu-arch=sm_60 --cuda-gpu-arch=sm_70 --cuda-gpu-arch=sm_80 \
 // RUN:   --cuda-gpu-arch=sm_90 -nocudainc -nocudalib \
 // RUN:   --clangir-offload-merge -c %s 2>&1 \
