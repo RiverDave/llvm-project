@@ -415,15 +415,13 @@ def OffloadLaunchGeometrySpecialization
     No cloning or dispatch is performed: an exact shape is only stamped when
     every launch the pipeline can see uses it, so there is no fallback launch
     of a different shape to route.
+
+    The value of M (when emitting .minnctapersm) is passed as a factory
+    parameter, not a pass option, matching CallConvLowering: choosing a
+    profitable M requires ptxas-feedback / runtime evidence outside the pass.
   }];
   let constructor = "mlir::createOffloadLaunchGeometrySpecializationPass()";
   let dependentDialects = ["cir::CIRDialect"];
-  let options = [
-    Option<"minCtasPerSm", "minctasm", "unsigned",
-           /*default=*/"0",
-           "Emit nvvm.minctasm = M (PTX .minnctapersm M) alongside reqntid. "
-           "0 (default) emits none.">,
-  ];
 }
 
 #endif // CLANG_CIR_DIALECT_PASSES_TD
