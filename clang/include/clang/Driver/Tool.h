@@ -75,6 +75,14 @@ public:
                             const InputInfoList &Inputs,
                             const llvm::opt::ArgList &TCArgs,
                             const char *LinkingOutput) const = 0;
+
+  /// Multi-output variant for tools that produce several outputs from one
+  /// action (e.g. CIR split). The default assumes a single output.
+  virtual void ConstructJobMultipleOutputs(Compilation &C, const JobAction &JA,
+                                           const InputInfoList &Outputs,
+                                           const InputInfoList &Inputs,
+                                           const llvm::opt::ArgList &TCArgs,
+                                           const char *LinkingOutput) const;
 };
 
 } // end namespace driver

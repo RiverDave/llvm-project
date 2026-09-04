@@ -6744,9 +6744,23 @@ InputInfoList Driver::BuildJobsForActionNoCache(
       if (i + 1 != e)
         llvm::errs() << ", ";
     }
-    llvm::errs() << "], output: " << Result.getAsString() << "\n";
+    if (UnbundlingResults.empty())
+      llvm::errs() << "], output: " << Result.getAsString() << "\n";
+    else {
+      llvm::errs() << "], outputs: [";
+      for (unsigned i = 0, e = UnbundlingResults.size(); i != e; ++i) {
+        llvm::errs() << UnbundlingResults[i].getAsString();
+        if (i + 1 != e)
+          llvm::errs() << ", ";
+      }
+      llvm::errs() << "] \n";
+    }
   } else {
-    T->ConstructJob(C, *JA, Result, InputInfos, Args, LinkingOutput);
+    if (UnbundlingResults.empty())
+      T->ConstructJob(C, *JA, Result, InputInfos, Args, LinkingOutput);
+    else
+      T->ConstructJobMultipleOutputs(C, *JA, UnbundlingResults, InputInfos,
+                                     Args, LinkingOutput);
   }
   return {Result};
 }
