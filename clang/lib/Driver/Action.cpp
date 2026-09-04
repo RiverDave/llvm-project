@@ -68,8 +68,6 @@ void Action::propagateDeviceOffloadInfo(OffloadKind OKind, BoundArch OArch,
   // Offload action set its own kinds on their dependences.
   if (Kind == OffloadClass)
     return;
-<<<<<<< HEAD
-=======
   // Merge/split mix host and device inputs; stamp the node itself but do not
   // recurse, so device info never bleeds into the host CIR compile.
   if (Kind == CIRSplitJobClass || Kind == CIRMergeJobClass) {
@@ -83,7 +81,6 @@ void Action::propagateDeviceOffloadInfo(OffloadKind OKind, BoundArch OArch,
   // Unbundling actions use the host kinds.
   if (Kind == OffloadUnbundlingJobClass)
     return;
->>>>>>> 8a3417016a69 ([CIR] Construct the offload merge driver pipeline for CUDA (single arch) (#7))
 
   assert((OffloadingDeviceKind == OKind || OffloadingDeviceKind == OFK_None) &&
          "Setting device kind to a different device??");
