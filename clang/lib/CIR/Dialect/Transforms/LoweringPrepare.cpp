@@ -13,6 +13,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Value.h"
+#include "clang/AST/Module.h"
 #include "clang/Basic/Cuda.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Basic/TargetCXXABI.h"
@@ -1393,7 +1394,8 @@ void LoweringPreparePass::handleStaticLocal(cir::GlobalOp globalOp,
 
   // Inline variables that weren't instantiated from variable templates have
   // partially-ordered initialization within their translation unit.
-  cir::TemplateSpecializationKind tsk = info.getTsk();
+  cir::TemplateSpecializationKind tsk =
+      static_cast<cir::TemplateSpecializationKind>(info.getTsk());
   bool isTemplateInstantiation =
       tsk == cir::TemplateSpecializationKind::ImplicitInstantiation ||
       tsk ==
@@ -1413,8 +1415,8 @@ void LoweringPreparePass::handleStaticLocal(cir::GlobalOp globalOp,
   // inline variables; other global initialization is always single-threaded
   // or (through lazy dynamic loading in multiple threads) unsequenced.
   bool threadsafe = lowerModule->getLangOpts().ThreadsafeStatics &&
-                    (info.getLocal() || nonTemplateInline) &&
-                    info.getTls() == cir::TLSKind::None;
+                    (info.getIsLocalVarDecl() || nonTemplateInline) &&
+                    info.getTLSKind() == clang::VarDecl::TLS_None;
 
   // If we have a global variable with internal linkage and thread-safe statics
   // are disabled, we can just let the guard variable be of type i8.
@@ -1423,7 +1425,7 @@ void LoweringPreparePass::handleStaticLocal(cir::GlobalOp globalOp,
   // Create the guard variable if we don't already have it.
   cir::GlobalOp guard = getOrCreateStaticLocalDeclGuardAddress(
       builder, globalOp, globalOp.getStaticLocalGuard()->getName().getValue(),
-      info.getLocal(), useInt8GuardVariable);
+      info.getIsLocalVarDecl(), useInt8GuardVariable);
   if (!guard) {
     // Error was already emitted, just restore the terminator and return.
     localInitBlock->push_back(ret);
@@ -1513,7 +1515,7 @@ void LoweringPreparePass::handleStaticLocal(cir::GlobalOp globalOp,
         /*withElseRegion=*/false, [&](mlir::OpBuilder &, mlir::Location) {
           emitCXXGuardedInitIf(
               builder, globalOp, localInitOp.getCtorRegion(),
-              localInitOp.getDtorRegion(), info.getLocal(), guardPtr,
+              localInitOp.getDtorRegion(), info.getIsLocalVarDecl(), guardPtr,
               builder.getPointerTo(guard.getSymType()), threadsafe);
         });
   } else {
@@ -1543,13 +1545,13 @@ void LoweringPreparePass::lowerLocalInitOp(cir::LocalInitOp initOp) {
   // Remove the init local op, now that we've done everything we need with it.
   initOp.erase();
 }
-static bool isThreadWrapperReplaceable(cir::TLS_Model tls,
+static bool isThreadWrapperReplaceable(cir::TLSModel tls,
                                        const cir::LowerModule &lm) {
   // Note: Classic codegen needs to check that the VarDecl.getTLSKind() ==
   // TLS_Dynamic, but we don't attempt to emit the thread wrapper unless that is
   // already the case.  So the only thing that matters here is whether it is
   // darwin.
-  return tls == cir::TLS_Model::GeneralDynamic &&
+  return tls == cir::TLSModel::GeneralDynamic &&
          lm.getTarget().getTriple().isOSDarwin();
 }
 

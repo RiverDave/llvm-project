@@ -2083,51 +2083,6 @@ def CIR_TemplateSpecializationKind
 }
 
 def CIR_StaticLocalInfoAttr
-    : CIR_Attr<"StaticLocalInfo", "static_local_info"> {
-  let summary = "Static-local variable facts needed by later lowering";
-  let description = [{
-    Holds the subset of a static-local variable's declaration facts that
-    post-CIRGen lowering needs, as plain data (no `clang::VarDecl` pointer).
-
-    - `local`: whether the variable is a block-scope (local) declaration.
-      Mirrors `clang::VarDecl::isLocalVarDecl()`. The namespace-scope inline
-      variables that also reach guarded initialization are not local.
-
-    - `tls`: the thread-local storage kind (`none`, `static`, or `dynamic`).
-
-    - `is_inline`: whether the variable is inline. Mirrors
-      `clang::VarDecl::isInline()`.
-
-    - `tsk`: the template-specialization kind (`undeclared`,
-      `implicit_instantiation`, `explicit_specialization`,
-      `explicit_instantiation_declaration`, or
-      `explicit_instantiation_definition`).
-
-    Example:
-    ```
-    cir.global ... @x = ...
-      {static_local_info = #cir.static_local_info<
-         local = true, tls = none, is_inline = false, tsk = undeclared>}
-    ```
-
-    Because it stores plain data rather than a `clang::VarDecl` pointer, it
-    round-trips through textual CIR and stays valid once the AST is gone.
-    This is what lets LoweringPrepare consume these facts without a live
-    `clang::ASTContext`; the `$ast` `ASTVarDeclAttr` remains a separate,
-    live-AST handle for consumers that need arbitrary AST properties.
-  }];
-
-  let parameters = (ins
-    "bool":$local,
-    EnumParameter<CIR_TLSKind>:$tls,
-    "bool":$is_inline,
-    EnumParameter<CIR_TemplateSpecializationKind>:$tsk
-  );
-
-  let assemblyFormat = [{
-    `<` struct($local, $tls, $is_inline, $tsk) `>`
-
-def CIR_StaticLocalInfoAttr
     : CIR_Attr<"StaticLocalInfo", "static_local_info",
                [ASTVarDeclInterface]> {
   let summary = "AST-free cache of static-local VarDecl facts.";

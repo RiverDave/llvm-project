@@ -130,11 +130,6 @@ runCIRToCIRPasses(mlir::ModuleOp theModule, mlir::MLIRContext &mlirContext,
           allowsX86TargetAttrAvx(astContext), getX86ABICompatInfo(astContext)));
   }
 
-                  clang::ASTContext &astContext, cir::LowerModule &lowerModule,
-                  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs,
-                  bool enableVerifier, bool enableIdiomRecognizer,
-                  bool enableCIRSimplify, bool enableLibOpt,
-                  llvm::StringRef libOptOptions, bool enableCallConvLowering) {
   pm.enableVerifier(enableVerifier);
   (void)mlir::applyPassManagerCLOptions(pm);
   return pm.run(theModule);
