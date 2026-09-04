@@ -13,7 +13,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Value.h"
-#include "clang/AST/Module.h"
+#include "clang/Basic/Module.h"
 #include "clang/Basic/Cuda.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Basic/TargetCXXABI.h"
