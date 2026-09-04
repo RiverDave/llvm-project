@@ -3905,14 +3905,8 @@ void CIRGenModule::release() {
       llvm::raw_svector_ostream out(fnName);
       cast<clang::ItaniumMangleContext>(getCXXABI().getMangleContext())
           .mangleModuleInitializer(primary, out);
-<<<<<<< HEAD
       theModule->setAttr(cir::CIRDialect::getCXXModuleInitFnNameAttrName(),
                          builder.getStringAttr(fnName));
-=======
-      theModule->setAttr(
-          cir::CIRDialect::getCXXModuleInitFnNameAttrName(),
-          builder.getStringAttr(fnName));
->>>>>>> ea1cdb838bdb ([CIR][CUDA] Add separate CUDA registration pass when consuming cir through CIRGenAction (#8))
     }
   }
 

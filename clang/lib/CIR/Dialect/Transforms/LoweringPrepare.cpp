@@ -1405,15 +1405,9 @@ void LoweringPreparePass::handleStaticLocal(cir::GlobalOp globalOp,
   // We only need to use thread-safe statics for local non-TLS variables and
   // inline variables; other global initialization is always single-threaded
   // or (through lazy dynamic loading in multiple threads) unsequenced.
-<<<<<<< HEAD
   bool threadsafe = astCtx->getLangOpts().ThreadsafeStatics &&
                     (info.getLocal() || nonTemplateInline) &&
                     info.getTls() == cir::TLSKind::None;
-=======
-  bool threadsafe = lowerModule->getLangOpts().ThreadsafeStatics &&
-                    (varDecl.isLocalVarDecl() || nonTemplateInline) &&
-                    !varDecl.getTLSKind();
->>>>>>> ea1cdb838bdb ([CIR][CUDA] Add separate CUDA registration pass when consuming cir through CIRGenAction (#8))
 
   // If we have a global variable with internal linkage and thread-safe statics
   // are disabled, we can just let the guard variable be of type i8.
@@ -1542,19 +1536,12 @@ void LoweringPreparePass::lowerLocalInitOp(cir::LocalInitOp initOp) {
   // Remove the init local op, now that we've done everything we need with it.
   initOp.erase();
 }
-<<<<<<< HEAD
 static bool isThreadWrapperReplaceable(clang::ASTContext &astCtx) {
   // Note: Classic codegen needs to check that the VarDecl.getTLSKind() ==
   // TLS_Dynamic, but we don't attempt to emit the thread wrapper unless that is
   // already the case.  So the only thing that matters here is whether it is
   // darwin.
   return astCtx.getTargetInfo().getTriple().isOSDarwin();
-=======
-static bool isThreadWrapperReplaceable(cir::TLS_Model tls,
-                                       const cir::LowerModule &lm) {
-  return tls == cir::TLS_Model::GeneralDynamic &&
-         lm.getTarget().getTriple().isOSDarwin();
->>>>>>> ea1cdb838bdb ([CIR][CUDA] Add separate CUDA registration pass when consuming cir through CIRGenAction (#8))
 }
 
 static cir::GlobalLinkageKind
@@ -1562,11 +1549,7 @@ getThreadLocalWrapperLinkage(GlobalOp op, const cir::LowerModule &lm) {
   if (isLocalLinkage(op.getLinkage()))
     return op.getLinkage();
 
-<<<<<<< HEAD
   if (isThreadWrapperReplaceable(astCtx))
-=======
-  if (isThreadWrapperReplaceable(*op.getTlsModel(), lm))
->>>>>>> ea1cdb838bdb ([CIR][CUDA] Add separate CUDA registration pass when consuming cir through CIRGenAction (#8))
     if (!isLinkOnceLinkage(op.getLinkage()) &&
         !isWeakODRLinkage(op.getLinkage()))
       return op.getLinkage();
@@ -1610,20 +1593,12 @@ LoweringPreparePass::getOrCreateThreadLocalWrapper(CIRBaseBuilderTy &builder,
       func, mlir::SymbolTable::Visibility::Private);
 
   if (!isLocalLinkage(linkageKind)) {
-<<<<<<< HEAD
     if (!isThreadWrapperReplaceable(*astCtx) ||
-=======
-    if (!isThreadWrapperReplaceable(*op.getTlsModel(), *lowerModule) ||
->>>>>>> ea1cdb838bdb ([CIR][CUDA] Add separate CUDA registration pass when consuming cir through CIRGenAction (#8))
         isLinkOnceLinkage(linkageKind) || isWeakODRLinkage(linkageKind) ||
         op.getGlobalVisibility() == cir::VisibilityKind::Hidden)
       func.setGlobalVisibility(cir::VisibilityKind::Hidden);
   }
-<<<<<<< HEAD
   if (isThreadWrapperReplaceable(*astCtx))
-=======
-  if (isThreadWrapperReplaceable(*op.getTlsModel(), *lowerModule))
->>>>>>> ea1cdb838bdb ([CIR][CUDA] Add separate CUDA registration pass when consuming cir through CIRGenAction (#8))
     op->emitError("Unhandled thread wrapper attributes for CC and Nounwind");
 
   threadLocalWrappers.insert({wrapperName.getValue(), func});
@@ -2015,7 +1990,6 @@ void LoweringPreparePass::buildCXXGlobalInitFunc() {
   // way as a non-modular TU with imports.
   // The C++20 named-module init function name is precomputed by CIRGen and
   // stored as a module-level attribute, so this pass does not need a live
-<<<<<<< HEAD
   // ASTContext in split-compilation flows. Fall back to the AST-based path
   // only when the attribute is absent (e.g. tests that bypass CIRGen).
   if (auto fnNameAttr = mlirModule->getAttrOfType<mlir::StringAttr>(
@@ -2029,13 +2003,6 @@ void LoweringPreparePass::buildCXXGlobalInitFunc() {
         astCtx->createMangleContext());
     cast<clang::ItaniumMangleContext>(*mangleCtx)
         .mangleModuleInitializer(astCtx->getCurrentNamedModule(), out);
-=======
-  // ASTContext.  Modules built directly from textual CIR can opt in to the
-  // module-init form by setting the same attribute.
-  if (auto fnNameAttr = mlirModule->getAttrOfType<mlir::StringAttr>(
-          cir::CIRDialect::getCXXModuleInitFnNameAttrName())) {
-    fnName += fnNameAttr.getValue();
->>>>>>> ea1cdb838bdb ([CIR][CUDA] Add separate CUDA registration pass when consuming cir through CIRGenAction (#8))
     linkage = cir::GlobalLinkageKind::ExternalLinkage;
   } else {
     fnName += "_GLOBAL__sub_I_";
