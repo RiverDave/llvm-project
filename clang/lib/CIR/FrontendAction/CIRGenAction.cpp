@@ -199,7 +199,8 @@ makeLowerModuleFromInvocation(CompilerInstance &CI, mlir::ModuleOp module) {
 static bool stampCUDABinaryHandle(CompilerInstance &CI,
                                   mlir::ModuleOp mlirModule,
                                   mlir::MLIRContext &mlirContext) {
-  llvm::StringRef cudaBinaryName = CI.getCodeGenOpts().CudaGpuBinaryFileName;
+  llvm::StringRef cudaBinaryName =
+      CI.getCodeGenOpts().OffloadBinaryToEmbedFile;
   if (cudaBinaryName.empty())
     return false;
 
