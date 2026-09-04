@@ -42,11 +42,14 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cctype>
+#include <iterator>
 #include <optional>
+#include <regex>
 #include <string>
 
 namespace {
@@ -273,9 +276,35 @@ void registerDialects(mlir::DialectRegistry &registry) {
 }
 
 mlir::OwningOpRef<mlir::ModuleOp> parseCIRInput(llvm::StringRef inputFileName,
-                                                mlir::MLIRContext &context) {
+                                                mlir::MLIRContext &context,
+                                                unsigned anonSeed = 0) {
   mlir::ParserConfig parserConfig(&context);
-  return mlir::parseSourceFile<mlir::ModuleOp>(inputFileName, parserConfig);
+  if (!anonSeed)
+    return mlir::parseSourceFile<mlir::ModuleOp>(inputFileName, parserConfig);
+
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+      llvm::MemoryBuffer::getFile(inputFileName);
+  if (!buffer)
+    return {};
+
+  // Anonymous record names ("anon.<N>") come from a per-module counter, so
+  // every input starts at "anon.0". All inputs parse into one shared context
+  // that interns named records by name only (recursive/incomplete records
+  // require name-first lookup), so the second module's "anon.0" would bind to
+  // the first module's record and silently drop its body. Give each module a
+  // container-unique anon namespace before parsing.
+  std::string text = buffer.get()->getBuffer().str();
+  std::regex anonRecordRe(R"((!cir\.(?:struct|union)<"anon\.)([0-9]+)("))");
+  text = std::regex_replace(
+      text, anonRecordRe,
+      [seed = anonSeed](const std::smatch &m,
+                        std::ostreambuf_iterator<char> out) {
+        std::string renamed = m[1].str() + std::to_string(seed) + "." +
+                              m[2].str() + m[3].str();
+        std::copy(renamed.begin(), renamed.end(), out);
+      });
+  return mlir::parseSourceString<mlir::ModuleOp>(text, parserConfig,
+                                                 inputFileName);
 }
 
 void setOffloadAttrs(mlir::ModuleOp cirModule, llvm::StringRef name,
@@ -296,10 +325,11 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
   mlir::OwningOpRef<mlir::ModuleOp> hostModule;
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> deviceModules;
   llvm::StringMap<unsigned> deviceNames;
+  unsigned moduleIndex = 0;
 
   for (const InputTarget &inputTarget : inputTargets) {
     mlir::OwningOpRef<mlir::ModuleOp> cirModule =
-        parseCIRInput(inputTarget.Input, context);
+        parseCIRInput(inputTarget.Input, context, ++moduleIndex);
     if (!cirModule)
       return {};
 
