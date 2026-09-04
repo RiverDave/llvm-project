@@ -115,7 +115,7 @@ runCIRToCIRPasses(mlir::ModuleOp theModule, mlir::MLIRContext &mlirContext,
   // outlines dynamic global initializers into functions.  It must run before
   // CallConvLowering so the classifier sees them, otherwise their signatures
   // go unclassified and caller and callee disagree on the ABI.
-  pm.addPass(mlir::createLoweringPreparePass(&astContext));
+  pm.addPass(mlir::createLoweringPreparePass(&lowerModule, &astContext));
 
   if (enableCallConvLowering) {
     // CallConvLowering rewrites signatures and call sites using the classifier,

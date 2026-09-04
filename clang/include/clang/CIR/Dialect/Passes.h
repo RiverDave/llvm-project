@@ -51,7 +51,7 @@ std::unique_ptr<Pass> createCallConvLoweringPass(
 std::unique_ptr<Pass> createHoistAllocasPass();
 std::unique_ptr<Pass> createLoweringPreparePass();
 std::unique_ptr<Pass> createLoweringPreparePass(
-    cir::LowerModule *lowerModule,
+    cir::LowerModule *lowerModule, clang::ASTContext *astCtx = nullptr,
     llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr);
 std::unique_ptr<Pass> createCUDARegisterModulePass();
 std::unique_ptr<Pass> createCUDARegisterModulePass(

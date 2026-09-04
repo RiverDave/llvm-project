@@ -80,7 +80,9 @@ struct LoweringPreparePass
   // pass clones and is more correct than the previous default-generated
   // behavior that silently copied them.
   LoweringPreparePass(const LoweringPreparePass &other)
-      : impl::LoweringPrepareBase<LoweringPreparePass>(other) {}
+      : impl::LoweringPrepareBase<LoweringPreparePass>(other),
+        lowerModule(other.lowerModule), astCtx(other.astCtx),
+        vfs(other.vfs) {}
 
   void runOnOperation() override;
 
@@ -294,6 +296,10 @@ struct LoweringPreparePass
   /// non-null while the pass runs.
   cir::LowerModule *lowerModule = nullptr;
 
+  /// Live ASTContext when available (cc1 path); null on the .cir resume path
+  /// and in cir-opt flows.
+  clang::ASTContext *astCtx = nullptr;
+
   /// Filesystem used to read CUDA/HIP fatbin payloads referenced by the
   /// module.  Defaults to the real filesystem; CIRGen can plumb the cc1
   /// invocation's VFS instead so virtualized inputs keep working.
@@ -498,7 +504,7 @@ struct LoweringPreparePass
       // structural, so it is only worth building when there can be one.
       // OG: CGF.EHStack.pushCleanup<CallGuardAbort>(EHCleanup, guard);
       //     ... CGF.PopCleanupBlock();
-      if (astCtx->getLangOpts().Exceptions) {
+      if (lowerModule->getLangOpts().Exceptions) {
         cir::CleanupScopeOp::create(
             builder, loc, cir::CleanupKind::EH,
             [&](mlir::OpBuilder &, mlir::Location bodyLoc) {
@@ -547,6 +553,7 @@ struct LoweringPreparePass
   }
 
   void setLowerModule(cir::LowerModule *lm) { lowerModule = lm; }
+  void setASTContext(clang::ASTContext *c) { astCtx = c; }
   void setVFS(llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> v) {
     vfs = std::move(v);
   }
@@ -1405,7 +1412,7 @@ void LoweringPreparePass::handleStaticLocal(cir::GlobalOp globalOp,
   // We only need to use thread-safe statics for local non-TLS variables and
   // inline variables; other global initialization is always single-threaded
   // or (through lazy dynamic loading in multiple threads) unsequenced.
-  bool threadsafe = astCtx->getLangOpts().ThreadsafeStatics &&
+  bool threadsafe = lowerModule->getLangOpts().ThreadsafeStatics &&
                     (info.getLocal() || nonTemplateInline) &&
                     info.getTls() == cir::TLSKind::None;
 
@@ -1536,12 +1543,14 @@ void LoweringPreparePass::lowerLocalInitOp(cir::LocalInitOp initOp) {
   // Remove the init local op, now that we've done everything we need with it.
   initOp.erase();
 }
-static bool isThreadWrapperReplaceable(clang::ASTContext &astCtx) {
+static bool isThreadWrapperReplaceable(cir::TLS_Model tls,
+                                       const cir::LowerModule &lm) {
   // Note: Classic codegen needs to check that the VarDecl.getTLSKind() ==
   // TLS_Dynamic, but we don't attempt to emit the thread wrapper unless that is
   // already the case.  So the only thing that matters here is whether it is
   // darwin.
-  return astCtx.getTargetInfo().getTriple().isOSDarwin();
+  return tls == cir::TLS_Model::GeneralDynamic &&
+         lm.getTarget().getTriple().isOSDarwin();
 }
 
 static cir::GlobalLinkageKind
@@ -1549,7 +1558,7 @@ getThreadLocalWrapperLinkage(GlobalOp op, const cir::LowerModule &lm) {
   if (isLocalLinkage(op.getLinkage()))
     return op.getLinkage();
 
-  if (isThreadWrapperReplaceable(astCtx))
+  if (isThreadWrapperReplaceable(*op.getTlsModel(), lm))
     if (!isLinkOnceLinkage(op.getLinkage()) &&
         !isWeakODRLinkage(op.getLinkage()))
       return op.getLinkage();
@@ -1593,12 +1602,12 @@ LoweringPreparePass::getOrCreateThreadLocalWrapper(CIRBaseBuilderTy &builder,
       func, mlir::SymbolTable::Visibility::Private);
 
   if (!isLocalLinkage(linkageKind)) {
-    if (!isThreadWrapperReplaceable(*astCtx) ||
+    if (!isThreadWrapperReplaceable(*op.getTlsModel(), *lowerModule) ||
         isLinkOnceLinkage(linkageKind) || isWeakODRLinkage(linkageKind) ||
         op.getGlobalVisibility() == cir::VisibilityKind::Hidden)
       func.setGlobalVisibility(cir::VisibilityKind::Hidden);
   }
-  if (isThreadWrapperReplaceable(*astCtx))
+  if (isThreadWrapperReplaceable(*op.getTlsModel(), *lowerModule))
     op->emitError("Unhandled thread wrapper attributes for CC and Nounwind");
 
   threadLocalWrappers.insert({wrapperName.getValue(), func});
@@ -3252,10 +3261,11 @@ std::unique_ptr<Pass> mlir::createCUDARegisterModulePass(
 }
 
 std::unique_ptr<Pass> mlir::createLoweringPreparePass(
-    cir::LowerModule *lowerModule,
+    cir::LowerModule *lowerModule, clang::ASTContext *astCtx,
     llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs) {
   auto pass = std::make_unique<LoweringPreparePass>();
   pass->setLowerModule(lowerModule);
+  pass->setASTContext(astCtx);
   pass->setVFS(std::move(vfs));
   return pass;
 }
