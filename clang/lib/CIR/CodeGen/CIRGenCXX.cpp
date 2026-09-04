@@ -311,9 +311,10 @@ void CIRGenModule::emitCXXSpecialVarDeclInit(const VarDecl *varDecl,
   if (addr.getStaticLocalGuard().has_value())
     addr.setStaticLocalInfoAttr(cir::StaticLocalInfoAttr::get(
         &getMLIRContext(), varDecl->isLocalVarDecl(),
-        getCIRTLSKind(varDecl->getTLSKind()), varDecl->isInline(),
-        getCIRTemplateSpecializationKind(
-            varDecl->getTemplateSpecializationKind())));
+        static_cast<uint32_t>(getCIRTLSKind(varDecl->getTLSKind())),
+        varDecl->isInline(),
+        static_cast<uint32_t>(getCIRTemplateSpecializationKind(
+            varDecl->getTemplateSpecializationKind()))));
 
   if (!ty->isReferenceType()) {
     assert(!cir::MissingFeatures::openMP());
