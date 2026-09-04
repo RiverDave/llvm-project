@@ -344,6 +344,14 @@ def OffloadKernelArgConstantPropagation
   }];
   let constructor = "mlir::createOffloadKernelArgConstantPropagationPass()";
   let dependentDialects = ["cir::CIRDialect"];
+  let statistics = [
+    Statistic<"numArgsPropagated", "num-args-propagated",
+              "Number of device kernel arguments replaced by a constant">,
+    Statistic<"numKernelsRewritten", "num-kernels-rewritten",
+              "Number of device kernels with at least one argument replaced">,
+    Statistic<"numKernelsSkipped", "num-kernels-skipped",
+              "Number of kernels skipped before any argument was examined">,
+  ];
 }
 
 #endif // CLANG_CIR_DIALECT_PASSES_TD

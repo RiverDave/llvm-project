@@ -1,0 +1,73 @@
+// RUN: cir-opt %s \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-kernel-arg-const-prop))" \
+// RUN:   -mlir-pass-statistics -o /dev/null 2>&1 \
+// RUN:   | FileCheck --check-prefix=STATS %s
+
+// RUN: cir-opt %s \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-kernel-arg-const-prop))" \
+// RUN:   --remarks-filter=".*" -o /dev/null 2>&1 \
+// RUN:   | FileCheck --check-prefix=REMARK %s
+
+!s32i = !cir.int<s, 32>
+
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      // Propagated: internal stub, one launch site passing a constant.
+      cir.func internal private @stub_prop(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_prop">} {
+        %0 = cir.get_global @stub_prop : !cir.ptr<!cir.func<(!s32i)>>
+        cir.return
+      }
+      cir.func @launch_prop() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_prop(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_prop">} : (!s32i) -> ()
+        cir.return
+      }
+
+      // Skipped: never launched in this translation unit.
+      cir.func internal private @stub_nolaunch(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_nolaunch">} {
+        %0 = cir.get_global @stub_nolaunch : !cir.ptr<!cir.func<(!s32i)>>
+        cir.return
+      }
+
+      // Skipped: external stub, another TU may launch with a different value.
+      cir.func @stub_external(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_external">} {
+        cir.return
+      }
+      cir.func @launch_external() {
+        %0 = cir.const #cir.int<7> : !s32i
+        cir.call @stub_external(%0) {cu.kernel_name = #cir.cu.kernel_name<"kern_external">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_prop(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func @kern_nolaunch(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func @kern_external(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use(!s32i)
+    }
+  }
+}
+
+// One kernel rewritten, the other two skipped for different reasons.
+// STATS: OffloadKernelArgConstantPropagation
+// STATS-DAG: 1 num-args-propagated
+// STATS-DAG: 1 num-kernels-rewritten
+// STATS-DAG: 2 num-kernels-skipped
+
+// The passed remark carries the argument index and the kernel argument count,
+// so a sweep can rank kernels by propagation rate rather than raw count.
+// REMARK-DAG: remark: [Passed] KernelArgConstProp | Category:cir-offload-const-prop | Function=kern_prop | {{.*}}argIndex=0, kernelArgCount=1, launchSites=1
+
+// Both skips are reported, and the reason distinguishes them.
+// REMARK-DAG: remark: [Missed] KernelArgConstProp | Category:cir-offload-const-prop | Function=kern_nolaunch | {{.*}}Reason="no launch site in this translation unit"
+// REMARK-DAG: remark: [Missed] KernelArgConstProp | Category:cir-offload-const-prop | Function=kern_external | {{.*}}Reason="launch sites not all visible"
