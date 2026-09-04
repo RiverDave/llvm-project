@@ -47,9 +47,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cctype>
-#include <iterator>
 #include <optional>
-#include <regex>
 #include <string>
 
 namespace {
@@ -294,15 +292,35 @@ mlir::OwningOpRef<mlir::ModuleOp> parseCIRInput(llvm::StringRef inputFileName,
   // the first module's record and silently drop its body. Give each module a
   // container-unique anon namespace before parsing.
   std::string text = buffer.get()->getBuffer().str();
-  std::regex anonRecordRe(R"((!cir\.(?:struct|union)<"anon\.)([0-9]+)("))");
-  text = std::regex_replace(
-      text, anonRecordRe,
-      [seed = anonSeed](const std::smatch &m,
-                        std::ostreambuf_iterator<char> out) {
-        std::string renamed = m[1].str() + std::to_string(seed) + "." +
-                              m[2].str() + m[3].str();
-        std::copy(renamed.begin(), renamed.end(), out);
-      });
+  // Rename each anonymous record type-name slot (`!cir.struct<"anon.N"` /
+  // `!cir.union<"anon.N"`) to `"anon.<seed>.<N>"`.
+  std::string renamed;
+  renamed.reserve(text.size());
+  size_t pos = 0;
+  while (pos < text.size()) {
+    size_t hit = text.find("\"anon.", pos);
+    if (hit == std::string::npos) {
+      renamed.append(text, pos, std::string::npos);
+      break;
+    }
+    bool isTypeSlot =
+        (hit >= 12 && text.compare(hit - 12, 12, "!cir.struct<") == 0) ||
+        (hit >= 11 && text.compare(hit - 11, 11, "!cir.union<") == 0);
+    size_t digits = hit + 6; // skip `"anon.`
+    size_t digitsEnd = digits;
+    while (digitsEnd < text.size() && std::isdigit(text[digitsEnd]))
+      ++digitsEnd;
+    if (isTypeSlot && digitsEnd > digits && digitsEnd < text.size() &&
+        text[digitsEnd] == '"') {
+      renamed.append(text, pos, hit - pos);
+      renamed += "\"anon." + std::to_string(anonSeed) + ".";
+      pos = digits;
+      continue;
+    }
+    renamed.append(text, pos, hit - pos + 1);
+    pos = hit + 1;
+  }
+  text = std::move(renamed);
   return mlir::parseSourceString<mlir::ModuleOp>(text, parserConfig,
                                                  inputFileName);
 }
