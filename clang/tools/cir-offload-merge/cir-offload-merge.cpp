@@ -59,8 +59,8 @@ llvm::cl::opt<bool> Combine("combine", llvm::cl::desc("Combine CIR inputs"),
 llvm::cl::opt<bool> Split("split", llvm::cl::desc("Split combined CIR input"),
                           llvm::cl::cat(CIROffloadMergeCategory));
 
-llvm::cl::opt<bool> DisableLaunchBoundsPropagation(
-    "disable-launch-bounds-propagation",
+llvm::cl::opt<bool> DisableCirInferLaunchBounds(
+    "disable-cir-infer-launch-bounds",
     llvm::cl::desc("Disable launch-bound inference from host launch sites"),
     llvm::cl::cat(CIROffloadMergeCategory));
 
@@ -334,7 +334,7 @@ int runOffloadOptPasses(mlir::ModuleOp module) {
 
   containerPM.addPass(mlir::createOffloadDeadKernelEliminationPass());
   containerPM.addPass(mlir::createOffloadKernelArgConstantPropagationPass());
-  if (!DisableLaunchBoundsPropagation)
+  if (!DisableCirInferLaunchBounds)
     containerPM.addPass(mlir::createOffloadLaunchBoundsPropagationPass());
 
   if (mlir::failed(pm.run(module)))

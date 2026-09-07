@@ -11,7 +11,7 @@
 // RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 \
 // RUN:   -output=%t-enabled.cir
 // RUN: FileCheck %s --check-prefix=ENABLED --input-file=%t-enabled.cir
-// RUN: cir-offload-merge -combine -disable-launch-bounds-propagation \
+// RUN: cir-offload-merge -combine -disable-cir-infer-launch-bounds \
 // RUN:   -input=%t-host.cir -input=%t-device.cir \
 // RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 \
 // RUN:   -output=%t-disabled.cir

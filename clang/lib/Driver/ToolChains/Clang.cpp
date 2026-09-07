@@ -9687,7 +9687,7 @@ void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back("-combine");
   if (!TCArgs.hasFlag(options::OPT_fcir_infer_launch_bounds,
                       options::OPT_fno_cir_infer_launch_bounds, true))
-    CmdArgs.push_back("-disable-launch-bounds-propagation");
+    CmdArgs.push_back("-disable-cir-infer-launch-bounds");
   addOffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
 
   CmdArgs.push_back(
