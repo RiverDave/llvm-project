@@ -1765,7 +1765,8 @@ def CIR_SideEffect : CIR_I32EnumAttr<
       I32EnumAttrCase<"All", 0, "all">,
       I32EnumAttrCase<"Pure", 1, "pure">,
       I32EnumAttrCase<"Const", 2, "const">,
-      I32EnumAttrCase<"InaccessibleOrErrno", 3, "inaccessible_or_errno">
+      I32EnumAttrCase<"InaccessibleOrErrno", 3, "inaccessible_or_errno">,
+      I32EnumAttrCase<"ArgMem", 4, "argmem">
 ]> {
   let description = [{
     The side effect attribute specifies the possible side effects of a function
@@ -1783,6 +1784,10 @@ def CIR_SideEffect : CIR_I32EnumAttr<
       memory and errno. This matches LLVM
       `memory(inaccessiblemem: readwrite, errnomem: write)` used for sane
       `operator new` calls.
+    - argmem: The function or callee may only access argument memory and
+      inaccessible memory. This matches LLVM
+      `memory(argmem: readwrite, inaccessiblemem: readwrite)` used for
+      `__declspec(noalias)`.
 
     Examples:
 
@@ -1791,6 +1796,7 @@ def CIR_SideEffect : CIR_I32EnumAttr<
     %2 = cir.call @add(%0, %1) : (!s32i, !s32i) -> !s32i side_effect(pure)
     %2 = cir.call @add(%0, %1) : (!s32i, !s32i) -> !s32i side_effect(const)
     %2 = cir.call @alloc(%0) : (!u64i) -> !cir.ptr<!void> side_effect(inaccessible_or_errno)
+    %2 = cir.call @f(%0) : (!cir.ptr<!s32i>) -> () side_effect(argmem)
     ```
   }];
 }
