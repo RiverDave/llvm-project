@@ -39,6 +39,7 @@ createCallConvLoweringPass(cir::CallConvTarget target,
                            const llvm::abi::X86ABICompatInfo &x86AbiCompat);
 std::unique_ptr<Pass> createHoistAllocasPass();
 std::unique_ptr<Pass> createLoweringPreparePass();
+std::unique_ptr<Pass> createOffloadLaunchBoundsPropagationPass();
 std::unique_ptr<Pass> createGotoSolverPass();
 std::unique_ptr<Pass> createIdiomRecognizerPass();
 std::unique_ptr<Pass> createLibOptPass();
