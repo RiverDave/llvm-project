@@ -152,8 +152,14 @@ static mlir::Value recordFromCoercedFields(mlir::Value first,
       continue;
     for (mlir::Operation *castUser : cast.getResult().getUsers()) {
       auto store = mlir::dyn_cast<cir::StoreOp>(castUser);
+      // This detour only recovers dim3; any other record stored through the
+      // same coerce shape is not launch geometry.
+      auto record = store
+                        ? mlir::dyn_cast<cir::RecordType>(
+                              store.getValue().getType())
+                        : cir::RecordType{};
       if (!store || store.getAddr() != cast.getResult() ||
-          !mlir::isa<cir::RecordType>(store.getValue().getType()))
+          !record || record.getName().getValue() != "dim3")
         continue;
       // Users are unordered, so a second store leaves the one reaching the
       // load undecided; report no record instead.
