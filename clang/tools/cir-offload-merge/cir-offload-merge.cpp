@@ -59,6 +59,15 @@ llvm::cl::opt<bool> Combine("combine", llvm::cl::desc("Combine CIR inputs"),
 llvm::cl::opt<bool> Split("split", llvm::cl::desc("Split combined CIR input"),
                           llvm::cl::cat(CIROffloadMergeCategory));
 
+llvm::cl::opt<bool> DisableCirInferLaunchBounds(
+    "disable-cir-infer-launch-bounds",
+    llvm::cl::desc("Disable launch-bound inference from host launch sites"),
+    llvm::cl::cat(CIROffloadMergeCategory));
+llvm::cl::opt<bool> DisableCirPropKernelArgs(
+    "disable-cir-prop-kernel-args",
+    llvm::cl::desc("Disable constant kernel-argument propagation"),
+    llvm::cl::cat(CIROffloadMergeCategory));
+
 llvm::cl::list<std::string>
     InputFileNames("input",
                    llvm::cl::desc("Input CIR file. Can be specified multiple "
@@ -328,6 +337,10 @@ int runOffloadOptPasses(mlir::ModuleOp module) {
   modulePM.addPass(mlir::createSCCPPass());
 
   containerPM.addPass(mlir::createOffloadDeadKernelEliminationPass());
+  if (!DisableCirPropKernelArgs)
+    containerPM.addPass(mlir::createOffloadKernelArgConstantPropagationPass());
+  if (!DisableCirInferLaunchBounds)
+    containerPM.addPass(mlir::createOffloadLaunchBoundsPropagationPass());
 
   if (mlir::failed(pm.run(module)))
     return reportError("offload-container passes failed");
