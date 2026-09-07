@@ -145,3 +145,67 @@ module {
 
 // CHECK-LABEL: cir.func @kern()
 // CHECK-SAME: cir.nvvm.maxntid = "96"
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u32i = !cir.int<u, 32>
+!u64i = !cir.int<u, 64>
+!rec_dim3 = !cir.struct<"dim3" {data !u32i, data !u32i, data !u32i}>
+!rec_anon_struct = !cir.struct<{data !u64i, data !u32i}>
+
+// Same bound after CallConvLowering has flattened each dim3. The coerce slots
+// are declared in the order the pass emits them, block before grid, so the
+// walk cannot recover the geometry from operand position alone.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @__cudaPushCallConfiguration(!u64i, !u32i, !u64i, !u32i, !u64i, !cir.ptr<!s32i>) -> !s32i
+      cir.func private @dim3_ctor(!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) func_info<#cir.cxx_ctor<!rec_dim3, custom>>
+      cir.func internal private @stub() attributes {cu.kernel_name = #cir.cu.kernel_name<"kern">} {
+        cir.return
+      }
+      cir.func @launch() {
+        %cb = cir.alloca "coerce" align(8) : !cir.ptr<!rec_anon_struct>
+        %cg = cir.alloca "coerce" align(8) : !cir.ptr<!rec_anon_struct>
+        %g = cir.alloca "g" align(4) : !cir.ptr<!rec_dim3>
+        %b = cir.alloca "b" align(4) : !cir.ptr<!rec_dim3>
+        %one = cir.const #cir.int<1> : !u32i
+        %bx = cir.const #cir.int<256> : !u32i
+        cir.call @dim3_ctor(%g, %one, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        cir.call @dim3_ctor(%b, %bx, %one, %one) : (!cir.ptr<!rec_dim3>, !u32i, !u32i, !u32i) -> ()
+        %sh = cir.const #cir.int<0> : !u64i
+        %st = cir.const #cir.ptr<null> : !cir.ptr<!s32i>
+        %gv = cir.load %g : !cir.ptr<!rec_dim3>, !rec_dim3
+        %bv = cir.load %b : !cir.ptr<!rec_dim3>, !rec_dim3
+        %cgd = cir.cast bitcast %cg : !cir.ptr<!rec_anon_struct> -> !cir.ptr<!rec_dim3>
+        cir.store %gv, %cgd : !rec_dim3, !cir.ptr<!rec_dim3>
+        %gxy.p = cir.get_member %cg[0] {name = ""} : !cir.ptr<!rec_anon_struct> -> !cir.ptr<!u64i>
+        %gxy = cir.load %gxy.p : !cir.ptr<!u64i>, !u64i
+        %gz.p = cir.get_member %cg[1] {name = ""} : !cir.ptr<!rec_anon_struct> -> !cir.ptr<!u32i>
+        %gz = cir.load %gz.p : !cir.ptr<!u32i>, !u32i
+        %cbd = cir.cast bitcast %cb : !cir.ptr<!rec_anon_struct> -> !cir.ptr<!rec_dim3>
+        cir.store %bv, %cbd : !rec_dim3, !cir.ptr<!rec_dim3>
+        %bxy.p = cir.get_member %cb[0] {name = ""} : !cir.ptr<!rec_anon_struct> -> !cir.ptr<!u64i>
+        %bxy = cir.load %bxy.p : !cir.ptr<!u64i>, !u64i
+        %bz.p = cir.get_member %cb[1] {name = ""} : !cir.ptr<!rec_anon_struct> -> !cir.ptr<!u32i>
+        %bz = cir.load %bz.p : !cir.ptr<!u32i>, !u32i
+        %r = cir.call @__cudaPushCallConfiguration(%gxy, %gz, %bxy, %bz, %sh, %st) : (!u64i, !u32i, !u64i, !u32i, !u64i, !cir.ptr<!s32i>) -> !s32i
+        %c = cir.cast int_to_bool %r : !s32i -> !cir.bool
+        cir.if %c {
+        } else {
+          cir.call @stub() {cu.kernel_name = #cir.cu.kernel_name<"kern">} : () -> ()
+        }
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern() cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern()
+// CHECK-SAME: cir.nvvm.maxntid = "256"
