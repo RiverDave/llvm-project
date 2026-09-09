@@ -10,9 +10,28 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"
 #include "clang/CIR/Dialect/IR/CIRAttrs.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringSet.h"
 
+#include <cassert>
+
 using namespace cir;
+
+#ifndef NDEBUG
+// Whether `sites` accounts for every launch site of `binding`. Only used to
+// verify, under assertions, an invariant assumed when reusing an existing
+// specialization clone in place.
+static bool sitesCoverAllLaunches(const cir::KernelBinding &binding,
+                                   llvm::ArrayRef<cir::LaunchSite> sites) {
+  llvm::SmallPtrSet<mlir::Operation *, 4> requested;
+  for (const cir::LaunchSite &site : sites)
+    requested.insert(static_cast<mlir::Operation *>(site.stubCall));
+  return llvm::all_of(binding.launchSites, [&](const cir::LaunchSite &site) {
+    return requested.contains(static_cast<mlir::Operation *>(site.stubCall));
+  });
+}
+#endif
 
 // Determine unique names for a clone of a kernel and stub. Each clone's name is
 // a concatenation of base and suffix. If a name is already taken, the
@@ -140,12 +159,19 @@ cir::SpecializationTarget cir::getSpecializationTarget(
   if (!binding.hostStub || sites.empty())
     return {};
 
-  // If the stub is already a specialization clone, then we can just use the
-  // existing clone.
-  if (binding.hostStub->hasAttr(kSpecializationCloneAttr))
+  // If the stub is already a specialization clone, we can specialize it in
+  // place only when the requested sites are every launch it currently serves.
+  // Otherwise the clone still has other callers that did not ask for this
+  // specialization, and mutating it in place would silently change what they
+  // launch.
+  if (binding.hostStub->hasAttr(kSpecializationCloneAttr) &&
+      sites.size() == binding.launchSites.size()) {
+    assert(sitesCoverAllLaunches(binding, sites) &&
+           "sites must be every launch site of binding when sizes match");
     return {binding.hostStub,
             {binding.deviceKernels.begin(), binding.deviceKernels.end()},
             /*cloned=*/false};
+  }
 
   // Otherwise we try to clone the kernel for the requested sites.
   std::optional<cir::KernelClone> clone =
