@@ -10,7 +10,6 @@ add_clang_library(MLIRCIROffloadOpt
   MLIRCIRPassIncGen
 
   LINK_LIBS PUBLIC
-  MLIRLLVMDialect
   MLIRCIR
   MLIRIR
   MLIRPass
