@@ -1,0 +1,17 @@
+{
+  "head": "68de74eb1c3c116bc3142e1633977983b187b654",
+  "stack": [
+    "Python (pyproject): LLVM (requires-python >=3.8)"
+  ],
+  "verify_commands": [],
+  "fingerprint": {
+    "pyproject.toml": [
+      1786656471953653782,
+      543
+    ],
+    "package.json": "absent",
+    "go.mod": "absent",
+    "Cargo.toml": "absent",
+    ".ouroboros/mechanical.toml": "absent"
+  }
+}

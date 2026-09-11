@@ -329,6 +329,10 @@ int runOffloadOptPasses(mlir::ModuleOp module) {
 
   containerPM.addPass(mlir::createOffloadDeadKernelEliminationPass());
 
+  // Launch-derived noalias runs last: it observes the post-specialization IR
+  // and only annotates kernels that survive dead-kernel elimination.
+  containerPM.addPass(mlir::createOffloadLaunchNoaliasPass());
+
   if (mlir::failed(pm.run(module)))
     return reportError("offload-container passes failed");
   return 0;

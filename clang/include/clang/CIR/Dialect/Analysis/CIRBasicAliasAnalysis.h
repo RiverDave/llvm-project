@@ -66,6 +66,17 @@ private:
   ObjectRelation classifyObjects(mlir::Value lhs, mlir::Value rhs);
 };
 
+/// Walk past pointer-preserving operations — pointer casts, zero-strided
+/// `cir.ptr_stride`, zero-index member and element accesses — to the
+/// underlying object `val` refers to. Stops at block arguments and unknown
+/// operations, returning the current value. Shared by CIRBasicAliasAnalysis
+/// and by passes that need pointer provenance roots.
+mlir::Value getUnderlyingObject(mlir::Value val);
+
+/// Strip pointer-preserving casts only: bitcasts, address-space casts and
+/// `array_to_ptrdecay`. Stops at every other operation.
+mlir::Value stripPointerCasts(mlir::Value val);
+
 } // namespace cir
 
 #endif // CLANG_CIR_DIALECT_ANALYSIS_CIRBASICALIASANALYSIS_H

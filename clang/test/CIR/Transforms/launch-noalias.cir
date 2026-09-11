@@ -1,0 +1,940 @@
+// RUN: cir-opt %s -split-input-file \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   | FileCheck %s
+
+// Conservative rejection is silent: no diagnostic on stderr, exit code 0.
+// RUN: cir-opt %s -split-input-file \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   -o /dev/null 2> %t.err
+// RUN: FileCheck %s --allow-empty --check-prefix=NOERR --input-file=%t.err
+// NOERR-NOT: {{.}}
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// Checked-success retention with a single-store, non-escaping slot: the
+// allocation is checked `ne` against zero and the failure arm returns, so the
+// launch is reached only on success.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_ok(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_ok">} {
+        cir.return
+      }
+      cir.func @launch_ok() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_ok(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_ok">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_ok(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_ok(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// Two launches with distinct, fully proven roots: the kernel-wide meet stamps
+// noalias on both pointer parameters.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_meet(%arg0: !pf32, %arg1: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_meet">} {
+        cir.return
+      }
+      cir.func @launch_a() {
+        %slotA = cir.alloca "a" align(8) : !ppf32
+        %castA = cir.cast bitcast %slotA : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %errA = cir.call @cudaMalloc(%castA, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %badA = cir.cmp ne %errA, %zero : !s32i
+        cir.if %badA {
+          cir.return
+        }
+        %slotB = cir.alloca "b" align(8) : !ppf32
+        %castB = cir.cast bitcast %slotB : !ppf32 -> !ppvoid
+        %errB = cir.call @cudaMalloc(%castB, %size) : (!ppvoid, !u64i) -> !s32i
+        %badB = cir.cmp ne %errB, %zero : !s32i
+        cir.if %badB {
+          cir.return
+        }
+        %pA = cir.load %slotA : !ppf32, !pf32
+        %pB = cir.load %slotB : !ppf32, !pf32
+        cir.call @stub_meet(%pA, %pB) {cu.kernel_name = #cir.cu.kernel_name<"kern_meet">} : (!pf32, !pf32) -> ()
+        cir.return
+      }
+      cir.func @launch_b() {
+        %slotC = cir.alloca "c" align(8) : !ppf32
+        %castC = cir.cast bitcast %slotC : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %errC = cir.call @cudaMalloc(%castC, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %badC = cir.cmp ne %errC, %zero : !s32i
+        cir.if %badC {
+          cir.return
+        }
+        %slotD = cir.alloca "d" align(8) : !ppf32
+        %castD = cir.cast bitcast %slotD : !ppf32 -> !ppvoid
+        %errD = cir.call @cudaMalloc(%castD, %size) : (!ppvoid, !u64i) -> !s32i
+        %badD = cir.cmp ne %errD, %zero : !s32i
+        cir.if %badD {
+          cir.return
+        }
+        %pC = cir.load %slotC : !ppf32, !pf32
+        %pD = cir.load %slotD : !ppf32, !pf32
+        cir.call @stub_meet(%pC, %pD) {cu.kernel_name = #cir.cu.kernel_name<"kern_meet">} : (!pf32, !pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_meet(%arg0: !pf32, %arg1: !pf32) cc(ptx_kernel) {
+        %v0 = cir.load %arg0 : !pf32, !cir.float
+        %v1 = cir.load %arg1 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_meet(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// Single-store forwarding: cudaMalloc fills slot A; one store copies the loaded
+// pointer into slot B, which has no other writer and does not escape; the launch
+// reads slot B. The root still resolves to the allocation in A, so the kernel is
+// annotated.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_store(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_store">} {
+        cir.return
+      }
+      cir.func @launch_store() {
+        %slotA = cir.alloca "a" align(8) : !ppf32
+        %cast = cir.cast bitcast %slotA : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slotA : !ppf32, !pf32
+        %slotB = cir.alloca "b" align(8) : !ppf32
+        cir.store %p, %slotB : !pf32, !ppf32
+        %q = cir.load %slotB : !ppf32, !pf32
+        cir.call @stub_store(%q) {cu.kernel_name = #cir.cu.kernel_name<"kern_store">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_store(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_store(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// Same allocation root for two parameters of one launch: the repeated root
+// suppresses every launch-derived annotation on the kernel.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_dup(%arg0: !pf32, %arg1: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_dup">} {
+        cir.return
+      }
+      cir.func @launch_dup() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_dup(%p, %p) {cu.kernel_name = #cir.cu.kernel_name<"kern_dup">} : (!pf32, !pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_dup(%arg0: !pf32, %arg1: !pf32) cc(ptx_kernel) {
+        %v0 = cir.load %arg0 : !pf32, !cir.float
+        %v1 = cir.load %arg1 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_dup(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// One unprovable launch among two: the second launch passes a raw host pointer
+// with no allocation root, so the whole kernel is suppressed.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_badsite(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_badsite">} {
+        cir.return
+      }
+      cir.func @launch_good() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_badsite(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_badsite">} : (!pf32) -> ()
+        cir.return
+      }
+      cir.func @launch_unknown(%arg0: !pf32) {
+        cir.call @stub_badsite(%arg0) {cu.kernel_name = #cir.cu.kernel_name<"kern_badsite">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_badsite(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_badsite(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// A second writer to the slot between allocation and launch: the slot no longer
+// holds only the cudaMalloc result, so the site is disqualified.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_overwrite(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_overwrite">} {
+        cir.return
+      }
+      cir.func @launch_overwrite() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %other = cir.alloca "q" align(8) : !ppf32
+        %q = cir.load %other : !ppf32, !pf32
+        cir.store %q, %slot : !pf32, !ppf32
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_overwrite(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_overwrite">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_overwrite(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_overwrite(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// The slot address escapes into another callee: an unknown observer can reach
+// the staging slot, so the fact is dropped.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func private @sink(!ppf32)
+      cir.func internal private @stub_escape(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_escape">} {
+        cir.return
+      }
+      cir.func @launch_escape() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        cir.call @sink(%slot) : (!ppf32) -> ()
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_escape(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_escape">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_escape(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_escape(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// Unchecked allocation: failure can reach the launch on the fall-through path,
+// so no noalias is stamped.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_unchecked(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_unchecked">} {
+        cir.return
+      }
+      cir.func @launch_unchecked() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_unchecked(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_unchecked">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_unchecked(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_unchecked(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// The allocation is freed between allocation and launch: the launched pointer
+// is dangling, so the fact is dropped.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func private @cudaFree(!pf32) -> !s32i
+      cir.func internal private @stub_freed(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_freed">} {
+        cir.return
+      }
+      cir.func @launch_freed() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        %f = cir.call @cudaFree(%p) : (!pf32) -> !s32i
+        cir.call @stub_freed(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_freed">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_freed(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_freed(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// A kernel pointer parameter forwarded to an unknown callee: the callee body is
+// not inspected, so forwarding itself drops every annotation.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_unknown(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_unknown">} {
+        cir.return
+      }
+      cir.func @launch_unknown() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_unknown(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_unknown">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_unknown(%arg0: !pf32) cc(ptx_kernel) {
+        cir.call @unknown_helper(%arg0) : (!pf32) -> ()
+        cir.return
+      }
+      cir.func private @unknown_helper(!pf32)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_unknown(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// A kernel pointer parameter forwarded to a visible wrapper: even a visible
+// body is not inspected, so forwarding itself drops every annotation.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_wrapper(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_wrapper">} {
+        cir.return
+      }
+      cir.func @launch_wrapper() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_wrapper(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_wrapper">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_wrapper(%arg0: !pf32) cc(ptx_kernel) {
+        cir.call @wrapper(%arg0) : (!pf32) -> ()
+        cir.return
+      }
+      cir.func private @wrapper(%arg0: !pf32) {
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_wrapper(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// Address-taken device global consumed by the kernel: another object can alias
+// the parameter, so the fact is dropped.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_global(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_global">} {
+        cir.return
+      }
+      cir.func @launch_global() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_global(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_global">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.global external @gvar = #cir.ptr<null> : !pf32
+      cir.func @kern_global(%arg0: !pf32) cc(ptx_kernel) {
+        %g = cir.get_global @gvar : !ppf32
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_global(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// In-kernel free: dynamic deallocation can invalidate the allocation root, so
+// the fact is dropped.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_free(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_free">} {
+        cir.return
+      }
+      cir.func @launch_free() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_free(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_free">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_free(%arg0: !pf32) cc(ptx_kernel) {
+        cir.call @free(%arg0) : (!pf32) -> ()
+        cir.return
+      }
+      cir.func private @free(!pf32)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_free(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// External stub: another translation unit may launch the kernel with arguments
+// this container cannot see, so the closed-world gate drops every annotation.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func @stub_extern(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_extern">} {
+        cir.return
+      }
+      cir.func @launch_extern() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_extern(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_extern">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_extern(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_extern(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// Pointer-to-integer laundering in the kernel body: a param-derived address can
+// outlive the pointer form, so the fact is dropped.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_launder(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_launder">} {
+        cir.return
+      }
+      cir.func @launch_launder() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_launder(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_launder">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_launder(%arg0: !pf32) cc(ptx_kernel) {
+        %i = cir.cast ptr_to_int %arg0 : !pf32 -> !u64i
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_launder(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// A derived pointer (stride from the parameter) forwarded to a callee:
+// forwarding disqualifies regardless of the callee.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_derived(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_derived">} {
+        cir.return
+      }
+      cir.func @launch_derived() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_derived(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_derived">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_derived(%arg0: !pf32) cc(ptx_kernel) {
+        %idx = cir.const #cir.int<1> : !s32i
+        %q = cir.ptr_stride %arg0, %idx : (!pf32, !s32i) -> !pf32
+        cir.call @sink(%q) : (!pf32) -> ()
+        cir.return
+      }
+      cir.func private @sink(!pf32)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_derived(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// A pointer loaded from memory inside the kernel (pointer-table shape): the
+// loaded pointer may alias the parameter, so the fact is dropped.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_ptrload(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_ptrload">} {
+        cir.return
+      }
+      cir.func @launch_ptrload() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_ptrload(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_ptrload">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_ptrload(%arg0: !pf32) cc(ptx_kernel) {
+        %loc = cir.alloca "t" align(8) : !ppf32
+        %q = cir.load %loc : !ppf32, !pf32
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_ptrload(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT: llvm.noalias
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// Freeing after the launch is normal cleanup: only a free before the launch
+// invalidates the fact.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func private @free(!pf32)
+      cir.func internal private @stub_freeafter(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_freeafter">} {
+        cir.return
+      }
+      cir.func @launch_freeafter() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_freeafter(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_freeafter">} : (!pf32) -> ()
+        cir.call @free(%p) : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_freeafter(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_freeafter(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// The success-arm form: the launch sits inside `if (err == success)`, which
+// proves success on every path reaching the launch.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_eq(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_eq">} {
+        cir.return
+      }
+      cir.func @launch_eq() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %ok = cir.cmp eq %err, %zero : !s32i
+        cir.if %ok {
+          %p = cir.load %slot : !ppf32, !pf32
+          cir.call @stub_eq(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_eq">} : (!pf32) -> ()
+          cir.return
+        }
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_eq(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_eq(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// Non-pointer parameters are skipped by the recognizer and by stamping: only
+// the pointer parameter is annotated.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+      cir.func internal private @stub_mixed(%arg0: !pf32, %arg1: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_mixed">} {
+        cir.return
+      }
+      cir.func @launch_mixed() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        %n = cir.const #cir.int<4> : !s32i
+        cir.call @stub_mixed(%p, %n) {cu.kernel_name = #cir.cu.kernel_name<"kern_mixed">} : (!pf32, !s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_mixed(%arg0: !pf32, %arg1: !s32i) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_mixed(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !s32i) cc(ptx_kernel)

@@ -23,7 +23,19 @@ using namespace cir;
 
 static constexpr unsigned MaxLookupDepth = 6;
 
-mlir::Value CIRBasicAliasAnalysis::getUnderlyingObject(mlir::Value val) {
+mlir::Value cir::stripPointerCasts(mlir::Value val) {
+  while (auto castOp = val.getDefiningOp<cir::CastOp>()) {
+    if (castOp.isAllocaPreservingCast() ||
+        castOp.getKind() == cir::CastKind::array_to_ptrdecay) {
+      val = castOp.getSrc();
+      continue;
+    }
+    break;
+  }
+  return val;
+}
+
+mlir::Value cir::getUnderlyingObject(mlir::Value val) {
   LDBG() << "Getting underlying object for: " << val;
 
   for (unsigned depth = 0; depth < MaxLookupDepth; ++depth) {
@@ -128,6 +140,10 @@ mlir::Value CIRBasicAliasAnalysis::getUnderlyingObject(mlir::Value val) {
     break; // Unknown op — stop here conservatively.
   }
   return val;
+}
+
+mlir::Value CIRBasicAliasAnalysis::getUnderlyingObject(mlir::Value val) {
+  return cir::getUnderlyingObject(val);
 }
 
 CIRBasicAliasAnalysis::ObjectRelation
