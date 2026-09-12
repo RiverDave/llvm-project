@@ -2,6 +2,7 @@ add_clang_library(MLIRCIR
   CIRAttrs.cpp
   CIRDialect.cpp
   CIRDialectBytecode.cpp
+  CIRInlinerInterface.cpp
   CIRMemorySlot.cpp
   CIRTypes.cpp
   CIRDataLayout.cpp
@@ -21,6 +22,8 @@ add_clang_library(MLIRCIR
   MLIRDLTIDialect
   MLIRDataLayoutInterfaces
   MLIRFuncDialect
+  MLIRFuncInlinerExtension
+  MLIRLLVMIRTransforms
   MLIRLoopLikeInterface
   MLIRPtrMemorySpaceInterfaces
   clangAST
