@@ -9689,6 +9689,10 @@ void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (TCArgs.hasArg(options::OPT_fno_clangir_offload_merge_launch_noalias))
     CmdArgs.push_back("-no-launch-noalias");
+  if (TCArgs.hasArg(options::OPT_fno_clangir_offload_merge_inline))
+    CmdArgs.push_back("-no-inline");
+  if (TCArgs.hasArg(options::OPT_fno_clangir_offload_merge_const_prop))
+    CmdArgs.push_back("-no-kernel-arg-const-prop");
 
   CmdArgs.push_back(
       TCArgs.MakeArgString(Twine("-output=") + Output.getFilename()));

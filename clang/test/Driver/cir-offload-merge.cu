@@ -68,5 +68,15 @@
 // EMIT-CIR-NOT: "-combine"
 // EMIT-CIR-NOT: "-split"
 
+// Perf A/B knobs are forwarded to the merge tool as its -no-* switches, so a
+// harness can flip any stage per compile (run_polybench --clang-flags).
+// RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
+// RUN:   --cuda-gpu-arch=sm_80 -nocudainc -nocudalib --clangir-offload-merge \
+// RUN:   -fno-clangir-offload-merge-inline \
+// RUN:   -fno-clangir-offload-merge-const-prop \
+// RUN:   -fno-clangir-offload-merge-launch-noalias -c %s 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=AB-KNOBS
+// AB-KNOBS: "{{.*}}cir-offload-merge{{(\.exe)?}}" "-combine" {{.*}} "-no-launch-noalias" "-no-inline" "-no-kernel-arg-const-prop"
+
 __global__ void kernel() {}
 void host() { kernel<<<1, 1>>>(); }

@@ -3499,6 +3499,18 @@ def fclangir_offload_merge_launch_noalias : Flag<["-"], "fclangir-offload-merge-
 def fno_clangir_offload_merge_launch_noalias : Flag<["-"], "fno-clangir-offload-merge-launch-noalias">,
   Visibility<[ClangOption]>, Group<f_Group>,
   HelpText<"Skip the launch-derived noalias pass in the ClangIR offload-merge pipeline (perf A/B).">;
+def fclangir_offload_merge_inline : Flag<["-"], "fclangir-offload-merge-inline">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Inline host wrappers into their callers in the ClangIR offload-merge pipeline (default).">;
+def fno_clangir_offload_merge_inline : Flag<["-"], "fno-clangir-offload-merge-inline">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Skip inlining host wrappers in the ClangIR offload-merge pipeline (perf A/B).">;
+def fclangir_offload_merge_const_prop : Flag<["-"], "fclangir-offload-merge-const-prop">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Run kernel-argument constant propagation in the ClangIR offload-merge pipeline (default).">;
+def fno_clangir_offload_merge_const_prop : Flag<["-"], "fno-clangir-offload-merge-const-prop">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Skip kernel-argument constant propagation in the ClangIR offload-merge pipeline (perf A/B).">;
 def emit_cir : Flag<["-"], "emit-cir">, Visibility<[ClangOption, CC1Option]>,
   Group<Action_Group>, HelpText<"Build ASTs and then lower to ClangIR">;
 /// ClangIR-specific options - END
