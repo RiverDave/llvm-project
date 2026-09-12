@@ -21,6 +21,8 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/Transforms/Passes.h"
+#include "clang/CIR/Dialect/IR/CIRDialect.h"
+#include "clang/CIR/Dialect/IR/CIRInlinerInterface.h"
 #include "clang/CIR/Dialect/Passes.h"
 #include "clang/CIR/InitAllDialects.h"
 #include "clang/CIR/Passes.h"
@@ -54,6 +56,10 @@ int main(int argc, char **argv) {
   cir::test::registerTestCIRAliasAnalysisPass();
 #endif
   registry.insert<mlir::memref::MemRefDialect, mlir::LLVM::LLVMDialect>();
+
+  // Attach the CIR DialectInlinerInterface and register the LLVM dialect's
+  // inliner-interface extension; shared with cir-offload-merge.
+  cir::registerInlinerInterface(registry);
 
   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
     return mlir::createCIRCanonicalizePass();
