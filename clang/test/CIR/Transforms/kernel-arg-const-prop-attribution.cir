@@ -1,10 +1,10 @@
 // RUN: cir-opt %s \
-// RUN:   -pass-pipeline="builtin.module(cir-offload-kernel-arg-const-prop)" \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-kernel-arg-const-prop))" \
 // RUN:   -mlir-pass-statistics -o /dev/null 2>&1 \
 // RUN:   | FileCheck --check-prefix=STATS %s
 
 // RUN: cir-opt %s \
-// RUN:   -pass-pipeline="builtin.module(cir-offload-kernel-arg-const-prop)" \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-kernel-arg-const-prop))" \
 // RUN:   --remarks-filter=".*" -o /dev/null 2>&1 \
 // RUN:   | FileCheck --check-prefix=REMARK %s
 
