@@ -156,6 +156,16 @@ CIRGenModule::CIRGenModule(mlir::MLIRContext &mlirContext,
     mlir::omp::setOpenMPVersionAttribute(theModule, langOpts.OpenMP);
   }
 
+  // Serialize the resolved FP-contraction model. CUDA/HIP default to Fast (and
+  // HIP to FastHonorPragmas) in the frontend, which the BackendUtil maps to
+  // AllowFPOpFusion. A resume -x cir cc1 has none of those LangOpts, so without
+  // this attr it would reconstruct the backend policy as Standard and drop the
+  // FMA fusion. Stamp only for CUDA/HIP so non-offload CIR output is unchanged.
+  if (langOpts.CUDA || langOpts.HIP)
+    theModule->setAttr(cir::CIRDialect::getFPContractModeAttrName(),
+                       builder.getStringAttr(cir::getFPContractModeString(
+                           langOpts.getDefaultFPContractMode())));
+
   if (langOpts.CUDA)
     createCUDARuntime();
   if (langOpts.OpenMP)

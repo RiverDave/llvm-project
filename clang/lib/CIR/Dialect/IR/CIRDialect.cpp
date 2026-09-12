@@ -12,6 +12,7 @@
 
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 
+#include "clang/Basic/LangOptions.h"
 #include "clang/CIR/Dialect/IR/CIRAttrs.h"
 #include "clang/CIR/Dialect/IR/CIROpsEnums.h"
 #include "clang/CIR/Dialect/IR/CIRTypes.h"
@@ -31,6 +32,8 @@
 #include "clang/CIR/MissingFeatures.h"
 #include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
@@ -94,6 +97,30 @@ struct CIROpAsmDialectInterface : public OpAsmDialectInterface {
   }
 };
 } // namespace
+
+llvm::StringRef cir::getFPContractModeString(clang::LangOptions::FPModeKind mode) {
+  switch (mode) {
+  case clang::LangOptions::FPM_Off:
+    return "off";
+  case clang::LangOptions::FPM_On:
+    return "on";
+  case clang::LangOptions::FPM_Fast:
+    return "fast";
+  case clang::LangOptions::FPM_FastHonorPragmas:
+    return "fast-honor-pragmas";
+  }
+  llvm_unreachable("unknown FP contract mode");
+}
+
+std::optional<clang::LangOptions::FPModeKind>
+cir::parseFPContractMode(llvm::StringRef str) {
+  return llvm::StringSwitch<std::optional<clang::LangOptions::FPModeKind>>(str)
+      .Case("off", clang::LangOptions::FPM_Off)
+      .Case("on", clang::LangOptions::FPM_On)
+      .Case("fast", clang::LangOptions::FPM_Fast)
+      .Case("fast-honor-pragmas", clang::LangOptions::FPM_FastHonorPragmas)
+      .Default(std::nullopt);
+}
 
 void cir::CIRDialect::initialize() {
   registerTypes();
