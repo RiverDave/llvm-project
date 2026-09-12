@@ -46,6 +46,7 @@ target_link_libraries(cir-opt
   MLIRAnalysis
   MLIRDialect
   MLIRIR
+  MLIRLLVMIRTransforms
   MLIRMemRefDialect
   MLIROpenMPTransforms
   MLIROptLib

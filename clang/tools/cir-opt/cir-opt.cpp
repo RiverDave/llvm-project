@@ -14,13 +14,16 @@
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/Transforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassOptions.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/Passes.h"
+#include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/Passes.h"
 #include "clang/CIR/InitAllDialects.h"
 #include "clang/CIR/Passes.h"
@@ -45,6 +48,42 @@ void registerPrintKernelBindingsPass();
 } // namespace test
 } // namespace cir
 
+namespace {
+/// Minimal DialectInlinerInterface for CIR, sufficient to exercise the generic
+/// MLIR inliner on ClangIR. Everything is legal to inline; the terminator
+/// handler rewrites cir.return into a cir.br to the continuation block.
+struct CIRInlinerInterface : public mlir::DialectInlinerInterface {
+  using mlir::DialectInlinerInterface::DialectInlinerInterface;
+
+  bool isLegalToInline(mlir::Operation *call, mlir::Operation *callable,
+                       bool wouldBeCloned) const final {
+    return true;
+  }
+  bool isLegalToInline(mlir::Region *dest, mlir::Region *src, bool wouldBeCloned,
+                       mlir::IRMapping &valueMapping) const final {
+    return true;
+  }
+  bool isLegalToInline(mlir::Operation *op, mlir::Region *dest, bool wouldBeCloned,
+                       mlir::IRMapping &valueMapping) const final {
+    return true;
+  }
+  void handleTerminator(mlir::Operation *op, mlir::Block *newDest) const final {
+    auto ret = mlir::dyn_cast<cir::ReturnOp>(op);
+    assert(ret && "expected cir.return");
+    mlir::OpBuilder builder(op);
+    cir::BrOp::create(builder, op->getLoc(), newDest, ret.getInput());
+    op->erase();
+  }
+  void handleTerminator(mlir::Operation *op,
+                        mlir::ValueRange valuesToReplace) const final {
+    auto ret = mlir::dyn_cast<cir::ReturnOp>(op);
+    assert(ret && "expected cir.return");
+    for (auto [oldVal, newVal] : llvm::zip(valuesToReplace, ret.getInput()))
+      oldVal.replaceAllUsesWith(newVal);
+  }
+};
+} // namespace
+
 int main(int argc, char **argv) {
   // TODO: register needed MLIR passes for CIR?
   mlir::DialectRegistry registry;
@@ -54,6 +93,16 @@ int main(int argc, char **argv) {
   cir::test::registerTestCIRAliasAnalysisPass();
 #endif
   registry.insert<mlir::memref::MemRefDialect, mlir::LLVM::LLVMDialect>();
+
+  // The LLVM dialect promises DialectInlinerInterface; the implementation is
+  // shipped as a dialect extension that must be registered explicitly.
+  mlir::LLVM::registerInlinerInterface(registry);
+  // CIR ships no DialectInlinerInterface yet; attach a minimal one so the
+  // generic MLIR inliner can process CIR (experiment hook).
+  registry.addExtension(
+      +[](mlir::MLIRContext *ctx, cir::CIRDialect *dialect) {
+        dialect->addInterfaces<CIRInlinerInterface>();
+      });
 
   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
     return mlir::createCIRCanonicalizePass();
@@ -124,6 +173,7 @@ int main(int argc, char **argv) {
 
   mlir::omp::registerOpenMPPasses();
   mlir::registerTransformsPasses();
+  mlir::registerInlinerPass();
 
   return mlir::asMainReturnCode(MlirOptMain(
       argc, argv, "Clang IR analysis and optimization tool\n", registry));
