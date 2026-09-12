@@ -1601,6 +1601,67 @@ void cir::IfOp::build(OpBuilder &builder, OperationState &result, Value cond,
 }
 
 //===----------------------------------------------------------------------===//
+// IfOp canonicalization
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// Fold a `cir.if` whose condition is a boolean constant: splice the taken
+/// region in place of the op and drop the other region.
+class FoldConstantCondition : public OpRewritePattern<cir::IfOp> {
+public:
+  using OpRewritePattern<cir::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(cir::IfOp op,
+                                PatternRewriter &rewriter) const override {
+    auto cond = op.getCondition().getDefiningOp<cir::ConstantOp>();
+    if (!cond)
+      return failure();
+    auto boolAttr = dyn_cast<cir::BoolAttr>(cond.getValue());
+    if (!boolAttr)
+      return failure();
+
+    mlir::Region *taken =
+        boolAttr.getValue() ? &op.getThenRegion() : &op.getElseRegion();
+
+    // Nothing executes in the taken region: drop the op.
+    if (taken->empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Multi-block bodies need their branches rewired; single-block only for
+    // now.
+    if (!taken->hasOneBlock())
+      return failure();
+    mlir::Block *body = &taken->front();
+    if (body->empty())
+      return failure();
+
+    // Only `cir.yield`-terminated bodies can be hoisted as-is: a `cir.return`
+    // or `cir.br` would leave the ops after the `cir.if` unreachable, and
+    // dropping those needs CFG cleanup beyond this pattern's scope.
+    if (!isa<cir::YieldOp>(&body->back()))
+      return failure();
+
+    // The `cir.yield` is the "continue after the if" marker and is dropped
+    // with the op.
+    mlir::Operation *yield = &body->back();
+    rewriter.inlineBlockBefore(body, op->getBlock(), op->getIterator());
+    rewriter.eraseOp(yield);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+} // namespace
+
+void cir::IfOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                            MLIRContext *context) {
+  results.add<FoldConstantCondition>(context);
+}
+
+//===----------------------------------------------------------------------===//
 // ScopeOp
 //===----------------------------------------------------------------------===//
 

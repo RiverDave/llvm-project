@@ -1,0 +1,83 @@
+// RUN: cir-opt -cir-canonicalize -o %t.cir %s
+// RUN: FileCheck --input-file=%t.cir %s
+
+!s32i = !cir.int<s, 32>
+
+module {
+  cir.func @fold_true(%arg0: !s32i, %ptr: !cir.ptr<!s32i>) -> !s32i {
+    %0 = cir.const #cir.bool<true> : !cir.bool
+    cir.if %0 {
+      %1 = cir.const #cir.int<42> : !s32i
+      cir.store %1, %ptr : !s32i, !cir.ptr<!s32i>
+      cir.yield
+    } else {
+      %2 = cir.const #cir.int<13> : !s32i
+      cir.store %2, %ptr : !s32i, !cir.ptr<!s32i>
+      cir.yield
+    }
+    cir.return %arg0 : !s32i
+  }
+  // CHECK-LABEL: cir.func{{.*}} @fold_true
+  // CHECK-NOT: cir.if
+  // CHECK: cir.const #cir.int<42>
+  // CHECK: cir.store
+  // CHECK-NOT: cir.const #cir.int<13>
+  // CHECK: cir.return
+
+  cir.func @fold_false(%arg0: !s32i, %ptr: !cir.ptr<!s32i>) -> !s32i {
+    %0 = cir.const #cir.bool<false> : !cir.bool
+    cir.if %0 {
+      %1 = cir.const #cir.int<42> : !s32i
+      cir.store %1, %ptr : !s32i, !cir.ptr<!s32i>
+      cir.yield
+    } else {
+      %2 = cir.const #cir.int<7> : !s32i
+      cir.store %2, %ptr : !s32i, !cir.ptr<!s32i>
+      cir.yield
+    }
+    cir.return %arg0 : !s32i
+  }
+  // CHECK-LABEL: cir.func{{.*}} @fold_false
+  // CHECK-NOT: cir.if
+  // CHECK: cir.const #cir.int<7>
+  // CHECK: cir.store
+  // CHECK-NOT: cir.const #cir.int<42>
+  // CHECK: cir.return
+
+  cir.func @fold_empty_taken_region(%arg0: !s32i, %ptr: !cir.ptr<!s32i>) -> !s32i {
+    %0 = cir.const #cir.bool<false> : !cir.bool
+    cir.if %0 {
+      %1 = cir.const #cir.int<42> : !s32i
+      cir.store %1, %ptr : !s32i, !cir.ptr<!s32i>
+      cir.yield
+    }
+    cir.return %arg0 : !s32i
+  }
+  // CHECK-LABEL: cir.func{{.*}} @fold_empty_taken_region
+  // CHECK-NOT: cir.if
+  // CHECK-NOT: cir.const #cir.int<42>
+  // CHECK-NOT: cir.store
+
+  cir.func @keep_dynamic(%arg0: !s32i, %ptr: !cir.ptr<!s32i>, %arg1: !cir.bool) -> !s32i {
+    cir.if %arg1 {
+      %1 = cir.const #cir.int<42> : !s32i
+      cir.store %1, %ptr : !s32i, !cir.ptr<!s32i>
+      cir.yield
+    }
+    cir.return %arg0 : !s32i
+  }
+  // CHECK-LABEL: cir.func{{.*}} @keep_dynamic
+  // CHECK: cir.if
+
+  // A `cir.return`-terminated body would leave the ops after the if
+  // unreachable; not folded yet.
+  cir.func @keep_return_terminated(%arg0: !s32i) -> !s32i {
+    %0 = cir.const #cir.bool<true> : !cir.bool
+    cir.if %0 {
+      cir.return %arg0 : !s32i
+    }
+    cir.return %arg0 : !s32i
+  }
+  // CHECK-LABEL: cir.func{{.*}} @keep_return_terminated
+  // CHECK: cir.if
+}
