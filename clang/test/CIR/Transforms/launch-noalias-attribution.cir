@@ -1,0 +1,122 @@
+// RUN: cir-opt %s \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   -mlir-pass-statistics -o /dev/null 2>&1 \
+// RUN:   | FileCheck --check-prefix=STATS %s
+
+// RUN: cir-opt %s \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   --remarks-filter=".*" -o /dev/null 2>&1 \
+// RUN:   | FileCheck --check-prefix=REMARK %s
+
+// RUN: cir-opt %s \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   | FileCheck --check-prefix=IR %s
+
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!pf32 = !cir.ptr<!cir.float>
+!ppf32 = !cir.ptr<!cir.ptr<!cir.float>>
+!ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
+
+// One kernel is stamped; the other three are skipped, each with a distinct
+// reason. Only @kern_ok is anchored by a checked cudaMalloc slot on a fully
+// visible launch.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
+
+      // Annotated: internal stub, one launch, checked allocation.
+      cir.func internal private @stub_ok(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_ok">} {
+        cir.return
+      }
+      cir.func @launch_ok() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_ok(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_ok">} : (!pf32) -> ()
+        cir.return
+      }
+
+      // Skipped: exported stub, so other TUs may launch it.
+      cir.func @stub_external(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_external">} {
+        cir.return
+      }
+      cir.func @launch_external() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %zero = cir.const #cir.int<0> : !s32i
+        %bad = cir.cmp ne %err, %zero : !s32i
+        cir.if %bad {
+          cir.return
+        }
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_external(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_external">} : (!pf32) -> ()
+        cir.return
+      }
+
+      // Skipped: internal stub, never launched in this TU.
+      cir.func internal private @stub_nolaunch(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_nolaunch">} {
+        cir.return
+      }
+
+      // Skipped: the launch is reached even if cudaMalloc failed.
+      cir.func internal private @stub_unchecked(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_unchecked">} {
+        cir.return
+      }
+      cir.func @launch_unchecked() {
+        %slot = cir.alloca "p" align(8) : !ppf32
+        %cast = cir.cast bitcast %slot : !ppf32 -> !ppvoid
+        %size = cir.const #cir.int<16> : !u64i
+        %err = cir.call @cudaMalloc(%cast, %size) : (!ppvoid, !u64i) -> !s32i
+        %p = cir.load %slot : !ppf32, !pf32
+        cir.call @stub_unchecked(%p) {cu.kernel_name = #cir.cu.kernel_name<"kern_unchecked">} : (!pf32) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_ok(%arg0: !pf32) cc(ptx_kernel) {
+        %v = cir.load %arg0 : !pf32, !cir.float
+        cir.return
+      }
+      cir.func @kern_external(%arg0: !pf32) cc(ptx_kernel) {
+        cir.return
+      }
+      cir.func @kern_nolaunch(%arg0: !pf32) cc(ptx_kernel) {
+        cir.return
+      }
+      cir.func @kern_unchecked(%arg0: !pf32) cc(ptx_kernel) {
+        cir.return
+      }
+    }
+  }
+}
+
+// Each counter has exactly one cause: one kernel stamped (one pointer
+// parameter on it), three skipped.
+// STATS: OffloadLaunchNoalias
+// STATS-DAG: 1 num-kernels-annotated
+// STATS-DAG: 1 num-params-annotated
+// STATS-DAG: 3 num-kernels-skipped
+
+// Each rejection reason is distinguishable in the remark stream.
+// REMARK-DAG: remark: [Passed] OffloadLaunchNoalias | Category:cir-offload-noalias | Function=kern_ok | {{.*}}launchSites=1, pointerParams=1
+// REMARK-DAG: remark: [Missed] OffloadLaunchNoalias | Category:cir-offload-noalias | Function=kern_external | {{.*}}Reason="launch sites not all visible"
+// REMARK-DAG: remark: [Missed] OffloadLaunchNoalias | Category:cir-offload-noalias | Function=kern_nolaunch | {{.*}}Reason="no launch site in this translation unit"
+// REMARK-DAG: remark: [Missed] OffloadLaunchNoalias | Category:cir-offload-noalias | Function=kern_unchecked | {{.*}}Reason="allocation success not proven for pointer argument 0"
+
+// Only the proven kernel carries the attribute; the skipped signatures match
+// without one.
+// IR: cir.func @kern_ok(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// IR: cir.func @kern_external(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// IR: cir.func @kern_nolaunch(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// IR: cir.func @kern_unchecked(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)

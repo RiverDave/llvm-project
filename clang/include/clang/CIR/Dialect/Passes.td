@@ -365,6 +365,14 @@ def OffloadLaunchNoalias
   }];
   let constructor = "mlir::createOffloadLaunchNoaliasPass()";
   let dependentDialects = ["cir::CIRDialect"];
+  let statistics = [
+    Statistic<"numKernelsAnnotated", "num-kernels-annotated",
+              "Number of device kernels stamped with at least one llvm.noalias">,
+    Statistic<"numParamsAnnotated", "num-params-annotated",
+              "Number of kernel pointer parameters that received llvm.noalias">,
+    Statistic<"numKernelsSkipped", "num-kernels-skipped",
+              "Number of kernels that received no launch-derived fact">,
+  ];
 }
 
 #endif // CLANG_CIR_DIALECT_PASSES_TD

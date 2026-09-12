@@ -18,6 +18,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/IR/Remarks.h"
 #include "clang/CIR/Dialect/Analysis/CIRBasicAliasAnalysis.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/IR/CIROpsEnums.h"
@@ -27,6 +28,9 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/DebugLog.h"
+
+#define DEBUG_TYPE "cir-offload-launch-noalias"
 
 namespace mlir {
 #define GEN_PASS_DEF_OFFLOADLAUNCHNOALIAS
@@ -37,6 +41,31 @@ using namespace mlir;
 using namespace cir;
 
 namespace {
+
+static constexpr llvm::StringLiteral kRemarkName = "OffloadLaunchNoalias";
+static constexpr llvm::StringLiteral kRemarkCategory = "cir-offload-noalias";
+
+static void remarkSkipped(cir::FuncOp anchor, llvm::StringRef kernelName,
+                          llvm::StringRef reason, size_t numLaunchSites) {
+  if (!anchor)
+    return;
+  remark::missed(anchor.getLoc(), remark::RemarkOpts::name(kRemarkName)
+                                      .category(kRemarkCategory)
+                                      .function(kernelName))
+      << remark::add("no launch-derived noalias")
+      << remark::reason("{0}", reason)
+      << remark::metric("launchSites", numLaunchSites);
+}
+
+static void remarkStamped(cir::FuncOp kernel, llvm::StringRef kernelName,
+                          size_t numParams, size_t numLaunchSites) {
+  remark::passed(kernel.getLoc(), remark::RemarkOpts::name(kRemarkName)
+                                      .category(kRemarkCategory)
+                                      .function(kernelName))
+      << remark::add("stamped llvm.noalias on kernel pointer parameter(s)")
+      << remark::metric("pointerParams", numParams)
+      << remark::metric("launchSites", numLaunchSites);
+}
 
 static bool isZeroConstant(Value v) {
   auto cst = v.getDefiningOp<cir::ConstantOp>();
@@ -372,25 +401,63 @@ void OffloadLaunchNoaliasPass::runOnOperation() {
   cir::CIRBasicAliasAnalysis aliasAnalysis;
   bool changed = false;
 
+  auto anchorOf = [](const cir::KernelBinding &binding) {
+    return binding.deviceKernels.empty() ? binding.hostStub
+                                         : binding.deviceKernels.front();
+  };
+
+  LDBG() << "container has " << table.size() << " kernel binding(s)";
+
   for (const auto &entry : table) {
     llvm::StringRef kernelName = entry.first;
     const cir::KernelBinding &binding = entry.second;
 
+    LDBG() << "kernel '" << kernelName << "': " << binding.launchSites.size()
+           << " launch site(s), " << binding.deviceKernels.size()
+           << " device kernel(s)";
+
     // Closed-world gate: reuse the binding table's linkage/visibility predicate
     // so this pass and the other container passes agree on which launches are
     // observable. A kernel launched nowhere yields no launch-derived facts.
-    if (binding.launchSites.empty() || binding.deviceKernels.empty() ||
-        !table.allLaunchSitesVisible(kernelName))
+    if (binding.launchSites.empty()) {
+      LDBG() << "  skipped: no launch site in this translation unit";
+      remarkSkipped(anchorOf(binding), kernelName,
+                    "no launch site in this translation unit",
+                    binding.launchSites.size());
+      ++numKernelsSkipped;
       continue;
+    }
+    if (binding.deviceKernels.empty()) {
+      LDBG() << "  skipped: no device kernel bound";
+      remarkSkipped(anchorOf(binding), kernelName, "no device kernel bound",
+                    binding.launchSites.size());
+      ++numKernelsSkipped;
+      continue;
+    }
+    if (!table.allLaunchSitesVisible(kernelName)) {
+      LDBG() << "  skipped: launch sites not all visible";
+      remarkSkipped(anchorOf(binding), kernelName,
+                    "launch sites not all visible",
+                    binding.launchSites.size());
+      ++numKernelsSkipped;
+      continue;
+    }
 
+    std::string reason;
     bool kernelOk = true;
     for (cir::FuncOp kernel : binding.deviceKernels)
       if (!bodyAllowsNoalias(kernel)) {
         kernelOk = false;
         break;
       }
-    if (!kernelOk)
+    if (!kernelOk) {
+      LDBG() << "  skipped: kernel body has a drop-table violation";
+      remarkSkipped(anchorOf(binding), kernelName,
+                    "kernel body has a drop-table violation",
+                    binding.launchSites.size());
+      ++numKernelsSkipped;
       continue;
+    }
 
     cir::FuncOp stub = binding.hostStub;
     unsigned numArgs = stub.getNumArguments();
@@ -407,12 +474,23 @@ void OffloadLaunchNoaliasPass::runOnOperation() {
           continue;
         SlotRoot root;
         cir::CallOp launchCall = site.stubCall;
-        if (!resolveValueToRoot(site.getArg(i), root, 0) ||
-            !isAllocationSuccessChecked(root.malloc,
-                                        launchCall.getOperation()) ||
-            allocationFreed(root.malloc, root.slot,
+        if (!resolveValueToRoot(site.getArg(i), root, 0)) {
+          kernelOk = false;
+          reason = "no allocation root for pointer argument " + std::to_string(i);
+          break;
+        }
+        if (!isAllocationSuccessChecked(root.malloc,
+                                        launchCall.getOperation())) {
+          kernelOk = false;
+          reason = "allocation success not proven for pointer argument " +
+                   std::to_string(i);
+          break;
+        }
+        if (allocationFreed(root.malloc, root.slot,
                             launchCall.getOperation())) {
           kernelOk = false;
+          reason = "allocation freed before the launch for pointer argument " +
+                   std::to_string(i);
           break;
         }
         roots[i] = root;
@@ -428,23 +506,38 @@ void OffloadLaunchNoaliasPass::runOnOperation() {
             continue;
           if (!aliasAnalysis.alias(roots[i].slot, roots[j].slot).isNo()) {
             kernelOk = false;
+            reason = "repeated allocation root across pointer arguments";
             break;
           }
         }
       }
     }
-    if (!kernelOk)
+    if (!kernelOk) {
+      LDBG() << "  skipped: " << reason;
+      remarkSkipped(anchorOf(binding), kernelName, reason,
+                    binding.launchSites.size());
+      ++numKernelsSkipped;
       continue;
+    }
 
     // In-place attachment on the existing kernel parameters; no clones.
     for (cir::FuncOp kernel : binding.deviceKernels) {
+      unsigned stamped = 0;
       for (unsigned i = 0; i != numArgs && i < kernel.getNumArguments(); ++i) {
         if (!isPointer[i] ||
             !mlir::isa<cir::PointerType>(kernel.getArgument(i).getType()))
           continue;
         kernel.setArgAttr(i, mlir::LLVM::LLVMDialect::getNoAliasAttrName(),
                           mlir::UnitAttr::get(&getContext()));
+        ++stamped;
         changed = true;
+      }
+      if (stamped) {
+        LDBG() << "  '" << kernel.getSymName() << "': stamped " << stamped
+               << " pointer parameter(s)";
+        remarkStamped(kernel, kernelName, stamped, binding.launchSites.size());
+        ++numKernelsAnnotated;
+        numParamsAnnotated += stamped;
       }
     }
   }
