@@ -348,3 +348,75 @@ module {
 
 // CHECK-LABEL: cir.func @kern_othername(%arg0: !s32i) cc(ptx_kernel)
 // CHECK-NEXT: cir.call @use_othername(%arg0)
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// The launch argument is a load from a slot written exactly once with a
+// constant (`int n = 2048;`): the single store dominates the load, so the
+// load provably holds the constant and the kernel parameter is replaced.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_slot(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_slot">} {
+        cir.return
+      }
+      cir.func @launch_slot() {
+        %0 = cir.alloca "n" align(4) : !cir.ptr<!s32i>
+        %1 = cir.const #cir.int<2048> : !s32i
+        cir.store %1, %0 : !s32i, !cir.ptr<!s32i>
+        %2 = cir.load %0 : !cir.ptr<!s32i>, !s32i
+        cir.call @stub_slot(%2) {cu.kernel_name = #cir.cu.kernel_name<"kern_slot">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_slot(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_slot(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_slot(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_slot(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: %[[C:.*]] = cir.const #cir.int<2048> : !s32i
+// CHECK-NEXT: cir.call @use_slot(%[[C]])
+
+// -----
+
+!s32i = !cir.int<s, 32>
+
+// A slot written twice is not provably constant, even though both stores sit
+// before the load: nothing is propagated.
+module {
+  cir.offload.container {
+    builtin.module @host attributes {cir.offload.kind = #cir.offload_kind<host>} {
+      cir.func internal private @stub_two_stores(%arg0: !s32i) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_two_stores">} {
+        cir.return
+      }
+      cir.func @launch_two_stores() {
+        %0 = cir.alloca "n" align(4) : !cir.ptr<!s32i>
+        %1 = cir.const #cir.int<7> : !s32i
+        %2 = cir.const #cir.int<9> : !s32i
+        cir.store %1, %0 : !s32i, !cir.ptr<!s32i>
+        cir.store %2, %0 : !s32i, !cir.ptr<!s32i>
+        %3 = cir.load %0 : !cir.ptr<!s32i>, !s32i
+        cir.call @stub_two_stores(%3) {cu.kernel_name = #cir.cu.kernel_name<"kern_two_stores">} : (!s32i) -> ()
+        cir.return
+      }
+    }
+    builtin.module @device_0 attributes {cir.offload.kind = #cir.offload_kind<device>} {
+      cir.func @kern_two_stores(%arg0: !s32i) cc(ptx_kernel) {
+        cir.call @use_two_stores(%arg0) : (!s32i) -> ()
+        cir.return
+      }
+      cir.func private @use_two_stores(!s32i)
+    }
+  }
+}
+
+// CHECK-LABEL: cir.func @kern_two_stores(%arg0: !s32i) cc(ptx_kernel)
+// CHECK-NEXT: cir.call @use_two_stores(%arg0)
