@@ -37,6 +37,13 @@ def CIR_Dialect : Dialect {
     static llvm::StringRef getSourceLanguageAttrName() { return "cir.lang"; }
     static llvm::StringRef getTripleAttrName() { return "cir.triple"; }
     static llvm::StringRef getOptInfoAttrName() { return "cir.opt_info"; }
+    // Serialized FP-contraction model (module-level). The first CIRGen stamps
+    // the frontend's resolved DefaultFPContractMode (Fast for CUDA) so a resume
+    // cc1 (-x cir, which has no CUDA LangOpts) can reconstruct the backend
+    // AllowFPOpFusion policy instead of silently dropping to Standard.
+    static llvm::StringRef getFPContractModeAttrName() {
+      return "cir.fp_contract_mode";
+    }
     static llvm::StringRef getCalleeAttrName() { return "callee"; }
     static llvm::StringRef getNoThrowAttrName() { return "nothrow"; }
     static llvm::StringRef getNoReturnAttrName() { return "noreturn"; }

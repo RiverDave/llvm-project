@@ -24,6 +24,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "clang/CIR/Dialect/Passes.h"
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "clang/Basic/LangOptions.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/CIR/CIRGenerator.h"
 #include "clang/CIR/CIRToCIRPasses.h"
@@ -127,6 +128,20 @@ parseCIRInput(CompilerInstance &CI, mlir::MLIRContext &context,
     return {};
   }
   return module;
+}
+
+// The resume cc1 (-x cir) has no CUDA/HIP LangOpts, so its DefaultFPContractMode
+// defaults to FPM_Off and BackendUtil would reconstruct AllowFPOpFusion as
+// Standard, silently dropping the FP contraction the first CIRGen stamped into
+// the module (Fast for CUDA, FastHonorPragmas for HIP). Restore it from the
+// module-level cir.fp_contract_mode attr before lowering so device codegen
+// stays fused/faithful.
+static void applyFPContractModeFromModule(CompilerInstance &CI,
+                                          mlir::ModuleOp module) {
+  if (auto mode = module->getAttrOfType<mlir::StringAttr>(
+          cir::CIRDialect::getFPContractModeAttrName()))
+    if (auto parsed = cir::parseFPContractMode(mode.getValue()))
+      CI.getInvocation().getLangOpts().setDefaultFPContractMode(*parsed);
 }
 
 static bool linkInModules(CompilerInstance &CI, CodeGenOptions &CGO,
@@ -461,6 +476,10 @@ void CIRGenAction::ExecuteAction() {
   MLIRMod = parseCIRInput(CI, *MLIRCtx, *MainFile);
   if (!MLIRMod)
     return;
+
+  // Recover the FP-contraction model the first CIRGen stamped on the module so
+  // the resume backend keeps CUDA/HIP fusion policy (see helper comment).
+  applyFPContractModeFromModule(CI, *MLIRMod);
 
   // Stamp before the emit-cir early return so `-emit-cir` reflects the handle.
   bool hasCUDABinary = stampCUDABinaryHandle(CI, *MLIRMod, *MLIRCtx);

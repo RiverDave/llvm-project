@@ -26,6 +26,7 @@
 #include "mlir/Interfaces/MemorySlotInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+#include "clang/Basic/LangOptions.h"
 #include "clang/CIR/Dialect/IR/CIRAttrs.h"
 #include "clang/CIR/Dialect/IR/CIROpsDialect.h.inc"
 #include "clang/CIR/Dialect/IR/CIROpsEnums.h"
@@ -33,6 +34,9 @@
 #include "clang/CIR/Interfaces/CIRLoopOpInterface.h"
 #include "clang/CIR/Interfaces/CIROpInterfaces.h"
 #include "clang/CIR/MissingFeatures.h"
+
+#include "llvm/ADT/StringRef.h"
+#include <optional>
 
 using BuilderCallbackRef =
     llvm::function_ref<void(mlir::OpBuilder &, mlir::Location)>;
@@ -88,6 +92,15 @@ RecordLayoutAttr getRecordLayout(mlir::ModuleOp mod, mlir::StringAttr name);
 /// Same lookup as getRecordLayout, but returns a null attribute instead of
 /// asserting when the record has no layout entry.
 RecordLayoutAttr tryGetRecordLayout(mlir::ModuleOp mod, mlir::StringAttr name);
+
+/// Serialize a LangOptions::FPModeKind into the module-level
+/// cir.fp_contract_mode attribute value ("off"/"on"/"fast"/"fast-honor-pragmas").
+llvm::StringRef getFPContractModeString(clang::LangOptions::FPModeKind mode);
+
+/// Parse back a cir.fp_contract_mode value into a FPModeKind, or std::nullopt
+/// if the string is not a recognized FP-contraction mode.
+std::optional<clang::LangOptions::FPModeKind>
+parseFPContractMode(llvm::StringRef str);
 } // namespace cir
 
 // TableGen'erated files for MLIR dialects require that a macro be defined when
