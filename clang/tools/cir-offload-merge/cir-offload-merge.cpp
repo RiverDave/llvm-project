@@ -20,8 +20,11 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/IR/Remarks.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
@@ -30,6 +33,7 @@
 #include "mlir/Transforms/Passes.h"
 #include "clang/Basic/TargetID.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
+#include "clang/CIR/Dialect/IR/CIRInlinerInterface.h"
 #include "clang/CIR/Dialect/OpenMP/RegisterOpenMPExtensions.h"
 #include "clang/CIR/Dialect/Passes.h"
 #include "clang/Driver/OffloadBundler.h"
@@ -42,6 +46,8 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/DebugLog.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -50,6 +56,8 @@
 #include <string>
 
 namespace {
+
+#define DEBUG_TYPE "cir-offload-merge"
 
 llvm::cl::OptionCategory CIROffloadMergeCategory("cir-offload-merge options");
 
@@ -62,6 +70,21 @@ llvm::cl::opt<bool> Split("split", llvm::cl::desc("Split combined CIR input"),
 llvm::cl::opt<bool> NoLaunchNoalias(
     "no-launch-noalias",
     llvm::cl::desc("Skip the launch-derived noalias pass (perf A/B)"),
+    llvm::cl::cat(CIROffloadMergeCategory));
+
+llvm::cl::opt<bool> NoInline(
+    "no-inline",
+    llvm::cl::desc("Skip inlining host wrappers into their callers (perf A/B)"),
+    llvm::cl::cat(CIROffloadMergeCategory));
+
+llvm::cl::opt<bool> NoKernelArgConstProp(
+    "no-kernel-arg-const-prop",
+    llvm::cl::desc("Skip constant propagation of launch arguments (perf A/B)"),
+    llvm::cl::cat(CIROffloadMergeCategory));
+
+llvm::cl::opt<bool> Remarks(
+    "remarks",
+    llvm::cl::desc("Print all optimization remarks (passed/missed/failed)"),
     llvm::cl::cat(CIROffloadMergeCategory));
 
 llvm::cl::list<std::string>
@@ -318,31 +341,122 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
   return combinedModule;
 }
 
-// Run the offload-container optimization passes on the freshly combined module.
-// This is the pipeline seam where cross-boundary opts (DKE, and other passes)
-// run while host and device modules are still joined in one container.
+// Erase host functions that nothing references once wrappers have been inlined
+// away (closed-world DCE for the merge experiment).
+//
+// The inliner copies a wrapper's body to its call sites but leaves the original
+// definition behind. symbol-dce only removes private leftovers; a PolyBench
+// launcher like `mm2Cuda` is `dso_local` (externally visible) and stays, and
+// its now-dead launch stubs would still count as launch sites of the kernel,
+// which breaks the unanimity KACP needs to fire. The merged container is the
+// whole program for this experiment, so an unreferenced definition cannot be
+// called from anywhere else. `main` is protected (entry point).
+static void eraseUnreferencedHostFuncs(mlir::ModuleOp module) {
+  cir::OffloadContainerOp container =
+      *module.getOps<cir::OffloadContainerOp>().begin();
+  // Container invariant: the host module is the first nested module.
+  auto hostModule = *container.getOps<mlir::ModuleOp>().begin();
+
+  // Only act on whole programs. With an entry point, the container is the
+  // whole program and an unreferenced definition cannot be called from
+  // outside; a fragment (library-mode compile, test fixture) keeps its
+  // functions because someone else may call them.
+  bool hasMain = false;
+  for (cir::FuncOp func : hostModule.getOps<cir::FuncOp>())
+    if (func.getSymName() == "main") {
+      hasMain = true;
+      break;
+    }
+  if (!hasMain)
+    return;
+
+  // Collect every symbol reference in the host module by walking all ops and
+  // their attributes. SymbolTable::getSymbolUses does not traverse into
+  // nested symbol scopes (CIR function bodies), which would hide exactly the
+  // stub-call references the decision hinges on.
+  llvm::StringSet<> referenced;
+  hostModule.walk([&](mlir::Operation *op) {
+    for (mlir::NamedAttribute attr : op->getAttrs())
+      attr.getValue().walk([&](mlir::SymbolRefAttr ref) {
+        referenced.insert(ref.getLeafReference().getValue());
+      });
+  });
+
+  llvm::SmallVector<cir::FuncOp, 8> dead;
+  for (cir::FuncOp func : hostModule.getOps<cir::FuncOp>()) {
+    if (func.isDeclaration() || func.getSymName() == "main")
+      continue;
+    if (!referenced.contains(func.getSymName()))
+      dead.push_back(func);
+  }
+  for (cir::FuncOp func : dead) {
+    LDBG() << "erasing unreferenced host function @" << func.getSymName();
+    func.erase();
+  }
+}
+
+// Run the offload optimization passes on the freshly combined module.
+//
+// Stage 1 runs inside every nested module (host and device): promote slots and
+// propagate constants so that a kernel argument known at compile time reaches
+// the device stub call site as a `cir.const`. Crucially this includes inlining:
+// PolyBench launches sit inside host wrapper functions whose parameters are
+// opaque at the stub call, so the constants only become visible once the
+// wrapper body is inlined into its caller. The second mem2reg/sccp round
+// promotes the inlined copies and folds their arithmetic.
+//
+// Between the stages, unreferenced host definitions are erased (see
+// eraseUnreferencedHostFuncs) so that stale launch stubs cannot veto KACP's
+// unanimity requirement.
+//
+// Stage 2 runs on the container: kernel-arg constant propagation, canonicalize
+// (which folds the constant conditions KACP exposes), dead kernel elimination,
+// and finally launch-derived noalias, which observes the post-specialization
+// IR. All knobs below are A/B levers for perf experiments; the driver forwards
+// -fno-clangir-offload-merge-launch-noalias as -no-launch-noalias.
 int runOffloadOptPasses(mlir::ModuleOp module) {
-  mlir::PassManager pm(module.getContext(), mlir::ModuleOp::getOperationName());
-  mlir::OpPassManager &containerPM = pm.nest<cir::OffloadContainerOp>();
+  {
+    mlir::PassManager pm(module.getContext(),
+                         mlir::ModuleOp::getOperationName());
+    if (mlir::failed(mlir::applyPassManagerCLOptions(pm)))
+      return reportError("failed to apply pass manager options");
 
-  // Promote stack slots and propagate constants so that a kernel argument known
-  // at compile time reaches the device stub call site as a cir.const. Runs on
-  // every nested module, host and device.
-  mlir::OpPassManager &modulePM = containerPM.nest<mlir::ModuleOp>();
-  modulePM.addPass(mlir::createMem2Reg());
-  modulePM.addPass(mlir::createSCCPPass());
+    mlir::OpPassManager &modulePM =
+        pm.nest<cir::OffloadContainerOp>().nest<mlir::ModuleOp>();
+    modulePM.addPass(mlir::createMem2Reg());
+    modulePM.addPass(mlir::createSCCPPass());
+    if (!NoInline) {
+      modulePM.addPass(mlir::createInlinerPass());
+      modulePM.addPass(mlir::createSymbolDCEPass());
+      modulePM.addPass(mlir::createMem2Reg());
+      modulePM.addPass(mlir::createSCCPPass());
+    }
 
-  containerPM.addPass(mlir::createOffloadDeadKernelEliminationPass());
+    if (mlir::failed(pm.run(module)))
+      return reportError("offload module passes failed");
+  }
 
-  // Launch-derived noalias runs last: it observes the post-specialization IR
-  // and only annotates kernels that survive dead-kernel elimination. The
-  // driver forwards -fno-clangir-offload-merge-launch-noalias as
-  // -no-launch-noalias for A/B perf experiments.
-  if (!NoLaunchNoalias)
-    containerPM.addPass(mlir::createOffloadLaunchNoaliasPass());
+  if (!NoInline)
+    eraseUnreferencedHostFuncs(module);
 
-  if (mlir::failed(pm.run(module)))
-    return reportError("offload-container passes failed");
+  {
+    mlir::PassManager pm(module.getContext(),
+                         mlir::ModuleOp::getOperationName());
+    if (mlir::failed(mlir::applyPassManagerCLOptions(pm)))
+      return reportError("failed to apply pass manager options");
+
+    mlir::OpPassManager &containerPM = pm.nest<cir::OffloadContainerOp>();
+    if (!NoKernelArgConstProp) {
+      containerPM.addPass(mlir::createOffloadKernelArgConstantPropagationPass());
+      containerPM.addPass(mlir::createCanonicalizerPass());
+    }
+    containerPM.addPass(mlir::createOffloadDeadKernelEliminationPass());
+    if (!NoLaunchNoalias)
+      containerPM.addPass(mlir::createOffloadLaunchNoaliasPass());
+
+    if (mlir::failed(pm.run(module)))
+      return reportError("offload-container passes failed");
+  }
   return 0;
 }
 
@@ -438,17 +552,40 @@ int splitInput(llvm::StringRef inputFileName,
 
 int main(int argc, char **argv) {
   llvm::InitLLVM y(argc, argv);
+  // Register the shared pass-manager options (--remarks-filter,
+  // -mlir-pass-statistics) so pass remarks/stats can be inspected.
+  mlir::registerPassManagerCLOptions();
   llvm::cl::HideUnrelatedOptions(CIROffloadMergeCategory);
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "CIR host-device offload merge\n");
 
   mlir::DialectRegistry registry;
   registerDialects(registry);
+  // Same inliner surface as cir-opt; see CIRInlinerInterface.h.
+  cir::registerInlinerInterface(registry);
   mlir::MLIRContext context;
   context.loadDialect<cir::CIRDialect, mlir::memref::MemRefDialect,
                       mlir::LLVM::LLVMDialect, mlir::DLTIDialect,
                       mlir::omp::OpenMPDialect>();
   context.appendDialectRegistry(registry);
+
+  // Mirror MlirOptMain: without a SourceMgr-backed diagnostic handler the
+  // diagnostic engine drops remark-severity output (and pass remarks are
+  // emitted as remarks).
+  llvm::SourceMgr sourceMgr;
+  mlir::SourceMgrDiagnosticHandler diagnosticHandler(sourceMgr, &context);
+
+  if (Remarks) {
+    // Mirror MlirOptMain's remark setup: capture every category, print to
+    // stderr as they are emitted. Off by default so driver-driven compiles
+    // stay quiet.
+    mlir::remark::RemarkCategories cats{".*", "", "", "", ""};
+    if (mlir::failed(mlir::remark::enableOptimizationRemarks(
+            context, nullptr,
+            std::make_unique<mlir::remark::RemarkEmittingPolicyAll>(), cats,
+            /*printAsEmitRemarks=*/true)))
+      return reportError("failed to enable optimization remarks");
+  }
 
   if (Combine) {
     llvm::SmallVector<InputTarget, 4> inputTargets;
