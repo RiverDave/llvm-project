@@ -1,0 +1,38 @@
+// Resume a device .cir module through the -x cir path and check that the
+// backend FP-fusion policy (AllowFPOpFusion) is recovered from the module-level
+// cir.fp_contract_mode attribute that the first CIRGen stamped.
+//
+// A resume cc1 (-x cir) has no CUDA/HIP LangOpts, so without this attr its
+// DefaultFPContractMode defaults to FPM_Off and BackendUtil reconstructs
+// AllowFPOpFusion as Standard -- the fused a*b+c becomes mul+add in PTX even
+// though the original -x cuda emit was Fast. This test pins the round-trip:
+//
+//   - with attr:   cir.fp_contract_mode = "fast"   ->  fma.rn.f32 (fused)
+//   - without:     module lacking the attr          ->  mul.rn.f32 + add.rn.f32
+//
+// RUN: %clang_cc1 -triple nvptx64-nvidia-cuda -x cir -S %s -o - \
+// RUN:   | FileCheck %s --check-prefix=ATTR
+
+// Same kernel with the fp_contract_mode attr stripped, resumed identically:
+// must fall back to Standard (unfused).
+// RUN: sed '/cir\.fp_contract_mode = "fast"/d' %s \
+// RUN:   | %clang_cc1 -triple nvptx64-nvidia-cuda -x cir -S -x cir - -o - \
+// RUN:   | FileCheck %s --check-prefix=NOSTAMP
+
+module @device attributes {
+  cir.fp_contract_mode = "fast",
+  cir.lang = #cir.lang<cxx>,
+  cir.triple = "nvptx64-nvidia-cuda"
+} {
+  cir.func @kernel(%out: !cir.ptr<!cir.float>, %a: !cir.float, %b: !cir.float,
+                   %c: !cir.float) {
+    %mul = cir.fmul %a, %b : !cir.float
+    %add = cir.fadd %mul, %c : !cir.float
+    cir.store %add, %out : !cir.float, !cir.ptr<!cir.float>
+    cir.return
+  }
+}
+
+// ATTR: fma.rn.f32
+// NOSTAMP: mul.rn.f32
+// NOSTAMP-NOT: fma.rn.f32
