@@ -57,7 +57,26 @@ struct CIRInlinerInterface : public mlir::DialectInlinerInterface {
 
   bool isLegalToInline(mlir::Operation *call, mlir::Operation *callable,
                        bool wouldBeCloned) const final {
-    return true;
+    // Launch markers stay calls: the offload pipeline rebuilds its kernel
+    // binding table from `cu.kernel_name` stub calls, so inlining them away
+    // would erase the launch sites.
+    if (call && call->hasAttr("cu.kernel_name"))
+      return false;
+    // Only single-block bodies that end in `cir.return` are supported: the
+    // generic inliner models the call results through that terminator, and
+    // multi-block bodies (or bodies whose block ends in another op, e.g. a
+    // `cir.scope` whose paths all return) need result plumbing CIR does not
+    // have yet.
+    auto func = mlir::dyn_cast<cir::FuncOp>(callable);
+    if (!func || func.isDeclaration())
+      return false;
+    mlir::Region &body = func.getBody();
+    if (!body.hasOneBlock())
+      return false;
+    mlir::Block &block = body.front();
+    if (block.empty())
+      return false;
+    return mlir::isa<cir::ReturnOp>(&block.back());
   }
   bool isLegalToInline(mlir::Region *dest, mlir::Region *src, bool wouldBeCloned,
                        mlir::IRMapping &valueMapping) const final {
