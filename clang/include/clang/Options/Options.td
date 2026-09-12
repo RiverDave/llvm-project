@@ -3493,6 +3493,12 @@ defm clangir : BoolFOption<"clangir",
 def clangir_offload_merge : Flag<["--"], "clangir-offload-merge">,
   Visibility<[ClangOption]>,
   HelpText<"Merge serialized ClangIR host/device offload modules before backend compilation.">;
+def fclangir_offload_merge_launch_noalias : Flag<["-"], "fclangir-offload-merge-launch-noalias">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Run the launch-derived noalias pass in the ClangIR offload-merge pipeline (default).">;
+def fno_clangir_offload_merge_launch_noalias : Flag<["-"], "fno-clangir-offload-merge-launch-noalias">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Skip the launch-derived noalias pass in the ClangIR offload-merge pipeline (perf A/B).">;
 def emit_cir : Flag<["-"], "emit-cir">, Visibility<[ClangOption, CC1Option]>,
   Group<Action_Group>, HelpText<"Build ASTs and then lower to ClangIR">;
 /// ClangIR-specific options - END

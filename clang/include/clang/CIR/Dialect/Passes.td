@@ -352,11 +352,10 @@ def OffloadLaunchNoalias
   let description = [{
     Runs over a `cir.offload.container`. For every device kernel, proves from
     all of its visible host launches that each pointer parameter points into a
-    distinct `cudaMalloc` allocation, checked for success on the path to the
-    launch, and that no address-taken global, loaded pointer, forwarded value,
-    escape, or in-kernel allocation can reach the parameter. When every launch
-    and body path agrees, `noalias` is attached in place to the existing kernel
-    parameters.
+    distinct `cudaMalloc` allocation and that no address-taken global, loaded
+    pointer, forwarded value, escape, or in-kernel allocation can reach the
+    parameter. When every launch and body path agrees, `noalias` is attached in
+    place to the existing kernel parameters.
 
     The proof is kernel-wide and conservative: a repeated allocation root, an
     unprovable argument, or an unprovable body path drops every launch-derived

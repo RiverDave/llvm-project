@@ -8,8 +8,9 @@
 //
 // Stamps `llvm.noalias` on device-kernel pointer parameters when every visible
 // launch of the kernel passes pointers that provably come from distinct
-// cudaMalloc slots, the allocation is checked for success on the path to the
-// launch, and the kernel body cannot reach the pointer through any other path.
+// cudaMalloc slots and the kernel body cannot reach the pointer through any
+// other path. Unchecked allocations are accepted; only a free before the
+// launch invalidates a slot.
 //
 // The analysis is conservative and kernel-wide: a repeated root, an unprovable
 // argument, or an unprovable body path drops every launch-derived annotation
@@ -28,6 +29,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/DebugLog.h"
 
 #define DEBUG_TYPE "cir-offload-launch-noalias"
@@ -67,31 +69,6 @@ static void remarkStamped(cir::FuncOp kernel, llvm::StringRef kernelName,
       << remark::metric("launchSites", numLaunchSites);
 }
 
-static bool isZeroConstant(Value v) {
-  auto cst = v.getDefiningOp<cir::ConstantOp>();
-  if (!cst)
-    return false;
-  if (auto intAttr = mlir::dyn_cast<cir::IntAttr>(cst.getValue()))
-    return intAttr.getValue().isZero();
-  return false;
-}
-
-// A comparison against the success code: either a literal zero or the value
-// loaded from the canonical CUDA/HIP success-code global. v1 only knows these
-// spellings; broaden when other forms appear in the corpus.
-static bool isSuccessCode(Value v) {
-  if (isZeroConstant(v))
-    return true;
-  auto load = v.getDefiningOp<cir::LoadOp>();
-  if (!load)
-    return false;
-  auto getGlobal = cir::stripPointerCasts(load.getAddr()).getDefiningOp<cir::GetGlobalOp>();
-  if (!getGlobal)
-    return false;
-  return getGlobal.getName().contains("cudaSuccess") ||
-         getGlobal.getName().contains("hipSuccess");
-}
-
 // True when `a` executes before `b` in the top-level block of the same host
 // function, looking through structured regions such as `cir.scope`.
 static bool lexicallyBefore(Operation *a, Operation *b) {
@@ -104,14 +81,6 @@ static bool lexicallyBefore(Operation *a, Operation *b) {
   while (tb->getParentOp() != fn.getOperation())
     tb = tb->getParentOp();
   return ta->getBlock() == tb->getBlock() && ta->isBeforeInBlock(tb);
-}
-
-static bool isContainedIn(Operation *op, Region &region) {
-  for (Region *r = op->getParentRegion(); r;
-       r = r->getParentOp()->getParentRegion())
-    if (r == &region)
-      return true;
-  return false;
 }
 
 // The cudaMalloc out-parameter slot a launch argument derives from.
@@ -146,6 +115,18 @@ static bool derivesFromPointerParam(Value v, cir::FuncOp kernel) {
     Operation *def = cur.getDefiningOp();
     if (!def)
       continue;
+    // Pointer values round-trip through local stack slots: CIRGen materializes
+    // kernel parameters (and other address-taken values) into allocas. Follow
+    // the stores into such a slot so a reloaded pointer still counts as
+    // derived.
+    if (auto load = mlir::dyn_cast<cir::LoadOp>(def))
+      if (auto slot = load.getAddr().getDefiningOp<cir::AllocaOp>()) {
+        for (Operation *user : slot->getUsers())
+          if (auto store = mlir::dyn_cast<cir::StoreOp>(user))
+            if (mlir::isa<cir::PointerType>(store.getValue().getType()))
+              work.push_back(store.getValue());
+        continue;
+      }
     for (Value operand : def->getOperands())
       if (mlir::isa<cir::PointerType>(operand.getType()))
         work.push_back(operand);
@@ -153,10 +134,34 @@ static bool derivesFromPointerParam(Value v, cir::FuncOp kernel) {
   return false;
 }
 
+// CUDA builtin variables (__cuda_builtin_blockIdx_t, ...) are compiler-owned
+// records in the constant bank; they can never alias device allocations.
+static bool isCudaBuiltinVar(cir::GetGlobalOp getGlobal) {
+  auto ptrTy = mlir::dyn_cast<cir::PointerType>(getGlobal.getResult().getType());
+  if (!ptrTy)
+    return false;
+  auto rec = mlir::dyn_cast<cir::RecordType>(ptrTy.getPointee());
+  return rec && rec.getName().getValue().starts_with("__cuda_builtin_");
+}
+
+// A local slot holding a pointer derived from a kernel parameter carries that
+// pointer on the stack; forwarding the slot itself to a callee can leak it.
+static bool slotHoldsDerivedPointer(Value slot, cir::FuncOp kernel) {
+  if (!slot.getDefiningOp<cir::AllocaOp>())
+    return false;
+  for (Operation *user : slot.getUsers())
+    if (auto store = mlir::dyn_cast<cir::StoreOp>(user))
+      if (derivesFromPointerParam(store.getValue(), kernel))
+        return true;
+  return false;
+}
+
 // The universality obligations from the v1 drop-table that are visible in the
 // kernel body: address-taken globals, pointers loaded from memory, pointers
 // forwarded to any callee, escaped pointer values (including pointer-to-integer
-// laundering), and in-kernel allocation all drop the fact.
+// laundering), and in-kernel allocation all drop the fact. Rounding kernel
+// parameters through their entry-block slots is not an escape: such values
+// stay on the stack, and the obligations above still observe any real use.
 static bool bodyAllowsNoalias(cir::FuncOp kernel) {
   if (kernel.isDeclaration() || kernel.getBody().empty())
     return false;
@@ -166,9 +171,11 @@ static bool bodyAllowsNoalias(cir::FuncOp kernel) {
     if (!ok)
       return;
 
-    if (mlir::isa<cir::GetGlobalOp>(op)) {
-      ok = false;
-      return;
+    if (auto getGlobal = mlir::dyn_cast<cir::GetGlobalOp>(op)) {
+      if (!isCudaBuiltinVar(getGlobal)) {
+        ok = false;
+        return;
+      }
     }
 
     if (auto call = mlir::dyn_cast<cir::CallOp>(op)) {
@@ -179,21 +186,30 @@ static bool bodyAllowsNoalias(cir::FuncOp kernel) {
         return;
       }
       for (Value operand : call.getArgOperands())
-        if (derivesFromPointerParam(operand, kernel)) {
+        if (derivesFromPointerParam(operand, kernel) ||
+            slotHoldsDerivedPointer(operand, kernel)) {
           ok = false;
           return;
         }
     }
 
     if (auto load = mlir::dyn_cast<cir::LoadOp>(op)) {
-      if (mlir::isa<cir::PointerType>(load.getResult().getType())) {
+      // Reloading a pointer from a local stack slot is the round-trip of a
+      // value this body already holds (parameter materialization); pointers
+      // loaded from real memory still drop the fact.
+      if (mlir::isa<cir::PointerType>(load.getResult().getType()) &&
+          !load.getAddr().getDefiningOp<cir::AllocaOp>()) {
         ok = false;
         return;
       }
     }
 
     if (auto store = mlir::dyn_cast<cir::StoreOp>(op)) {
-      if (derivesFromPointerParam(store.getValue(), kernel)) {
+      // Storing into a local stack slot keeps the value on the stack; escapes
+      // through memory or callees are caught by the other obligations (and by
+      // slotHoldsDerivedPointer at call sites).
+      if (derivesFromPointerParam(store.getValue(), kernel) &&
+          !store.getAddr().getDefiningOp<cir::AllocaOp>()) {
         ok = false;
         return;
       }
@@ -214,6 +230,21 @@ static bool bodyAllowsNoalias(cir::FuncOp kernel) {
 // address must be an alloca that either a cudaMalloc wrote through (an
 // allocation instance) or that a single store forwards into; the slot and its
 // cast family must have no escaping use and no writer after the allocation.
+//
+// The runtime declares cudaMalloc as a C function, but the C++ headers also
+// provide an inline `template <class T> cudaMalloc(T **, size_t)` shim that
+// PolyBench-style code calls without a cast; CIRGen keeps the call to the
+// instantiation visible (no inlining runs before this pass), so recognize both
+// the plain symbol and its mangled C++ template instantiations.
+static bool isCudaMallocSymbol(llvm::StringRef callee) {
+  if (callee == "cudaMalloc")
+    return true;
+  if (!callee.starts_with("_Z"))
+    return false;
+  std::string demangled = llvm::demangle(callee.str());
+  return llvm::StringRef(demangled).contains("cudaMalloc<");
+}
+
 static bool resolveAddressToRoot(Value addr, SlotRoot &out, unsigned depth) {
   if (depth > 8)
     return false;
@@ -253,7 +284,7 @@ static bool resolveAddressToRoot(Value addr, SlotRoot &out, unsigned depth) {
       }
       if (auto call = mlir::dyn_cast<cir::CallOp>(user)) {
         std::optional<llvm::StringRef> callee = call.getCallee();
-        if (callee && *callee == "cudaMalloc" &&
+        if (callee && isCudaMallocSymbol(*callee) &&
             !call.getArgOperands().empty() &&
             call.getArgOperands().front() == cur) {
           mallocs.push_back(call);
@@ -297,63 +328,6 @@ static bool resolveValueToRoot(Value v, SlotRoot &out, unsigned depth) {
   if (auto load = v.getDefiningOp<cir::LoadOp>())
     return resolveAddressToRoot(load.getAddr(), out, depth + 1);
   // Block arguments, globals, constants and call results have no v1 root.
-  return false;
-}
-
-// Whether the launch is only reachable when cudaMalloc succeeded. The
-// allocation must execute unconditionally, and the failure arm of a comparison
-// against the success code must exit before the launch.
-static bool isAllocationSuccessChecked(cir::CallOp mallocCall,
-                                       Operation *launch) {
-  if (mallocCall.getNumResults() != 1)
-    return false;
-  Value err = mallocCall.getResult();
-  auto fn = launch->getParentOfType<cir::FuncOp>();
-  if (!fn || mallocCall->getParentOfType<cir::FuncOp>() != fn)
-    return false;
-
-  for (Operation *p = mallocCall->getParentOp(); p && p != fn.getOperation();
-       p = p->getParentOp())
-    if (mlir::isa<cir::IfOp, cir::SwitchOp, cir::WhileOp, cir::DoWhileOp,
-                  cir::ForOp>(p))
-      return false;
-
-  for (Operation *user : err.getUsers()) {
-    auto cmp = mlir::dyn_cast<cir::CmpOp>(user);
-    if (!cmp || (cmp.getLhs() != err && cmp.getRhs() != err))
-      continue;
-    Value other = cmp.getLhs() == err ? cmp.getRhs() : cmp.getLhs();
-    if (!isSuccessCode(other))
-      continue;
-
-    if (cmp.getKind() == cir::CmpOpKind::ne) {
-      // `if (err != success) exit;` leaves the fall-through path as success.
-      for (Operation *cmpUser : cmp.getResult().getUsers()) {
-        auto ifOp = mlir::dyn_cast<cir::IfOp>(cmpUser);
-        if (!ifOp || ifOp.getCondition() != cmp.getResult())
-          continue;
-        if (ifOp.getThenRegion().empty() ||
-            !ifOp.getThenRegion().hasOneBlock() ||
-            !mlir::isa<cir::ReturnOp>(
-                ifOp.getThenRegion().front().getTerminator()))
-          continue;
-        if (isContainedIn(launch, ifOp.getThenRegion()))
-          continue;
-        if (isContainedIn(launch, ifOp.getElseRegion()) ||
-            (!ifOp->isProperAncestor(launch) && lexicallyBefore(ifOp, launch)))
-          return true;
-      }
-    } else if (cmp.getKind() == cir::CmpOpKind::eq) {
-      // `if (err == success) { ... launch ... }` is the success arm.
-      for (Operation *cmpUser : cmp.getResult().getUsers()) {
-        auto ifOp = mlir::dyn_cast<cir::IfOp>(cmpUser);
-        if (!ifOp || ifOp.getCondition() != cmp.getResult())
-          continue;
-        if (isContainedIn(launch, ifOp.getThenRegion()))
-          return true;
-      }
-    }
-  }
   return false;
 }
 
@@ -477,13 +451,6 @@ void OffloadLaunchNoaliasPass::runOnOperation() {
         if (!resolveValueToRoot(site.getArg(i), root, 0)) {
           kernelOk = false;
           reason = "no allocation root for pointer argument " + std::to_string(i);
-          break;
-        }
-        if (!isAllocationSuccessChecked(root.malloc,
-                                        launchCall.getOperation())) {
-          kernelOk = false;
-          reason = "allocation success not proven for pointer argument " +
-                   std::to_string(i);
           break;
         }
         if (allocationFreed(root.malloc, root.slot,
