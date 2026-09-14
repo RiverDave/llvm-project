@@ -40,13 +40,13 @@ void test_builtin(const char *__restrict fmt) {
 __attribute__((malloc)) void *my_malloc(unsigned long n);
 void *test_ret(unsigned long n) { return my_malloc(n); }
 
+// CIR: cir.func {{.*}} @my_malloc(!u64i {llvm.noundef}) -> (!cir.ptr<!void> {llvm.noalias{{.*}}})
 // CIR: cir.func {{.*}} @test_ret(%{{.*}}: !u64i {llvm.noundef}
 // CIR:   cir.call @my_malloc(%{{.*}}) : (!u64i {llvm.noundef}) -> (!cir.ptr<!void> {llvm.noalias{{.*}}})
-// CIR: cir.func {{.*}} @my_malloc(!u64i {llvm.noundef}) -> (!cir.ptr<!void> {llvm.noalias{{.*}}})
 
+// LLVM: declare noalias {{.*}}ptr @my_malloc
 // LLVM: define dso_local {{.*}}ptr @test_ret
 // LLVM:   call noalias {{.*}}ptr @my_malloc
-// LLVM: declare noalias {{.*}}ptr @my_malloc
 
 // OGCG: define dso_local {{.*}}ptr @test_ret
 // OGCG:   call noalias {{.*}}ptr @my_malloc

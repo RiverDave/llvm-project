@@ -10,9 +10,9 @@
 __declspec(noalias) void noalias_callee(int *x);
 void noalias_caller(int *x) { noalias_callee(x); }
 
+// CIR: cir.func {{.*}}@noalias_callee(!cir.ptr<!s32i> {{.*}}) side_effect(argmem)
 // CIR: cir.func {{.*}} @noalias_caller
 // CIR:   cir.call @noalias_callee(%{{.*}}) nothrow side_effect(argmem)
-// CIR: cir.func {{.*}}@noalias_callee(!cir.ptr<!s32i> {{.*}}) side_effect(argmem)
 
 // LLVM: call void @noalias_callee({{.*}}) [[NA:#[0-9]+]]
 // OGCG: call void @noalias_callee({{.*}}) [[NA:#[0-9]+]]
