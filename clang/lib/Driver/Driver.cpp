@@ -6634,7 +6634,7 @@ InputInfoList Driver::BuildJobsForActionNoCache(
           /*MultipleArchs=*/!Dep.DependentBoundArch.empty(),
           LinkingOutput, CachedResults, BuildKind));
     }
-  } else if (const auto *SA = dyn_cast<CIRStagingMergeJobAction>(JA)) {
+  } else if (isa<CIRStagingMergeJobAction>(JA)) {
     // Staging merge (AMD-flavoured two-pass flow): Inputs[0] is host.cir and
     // is built with the host toolchain; Inputs[1..N] are per-arch device CIR
     // files built with the HIP device toolchain.

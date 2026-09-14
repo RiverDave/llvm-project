@@ -98,7 +98,7 @@ def CIR_OffloadFuncOp : CIR_Op<"offload.func", [
     // Carried over from the `cir.func` this was formed from.  Device code
     // leans on `__forceinline__` (always_inline) heavily, and dropping it
     // leaves the inliner to make a cost decision the programmer already made.
-    OptionalAttr<CIR_InlineKind>:$inline_kind
+    OptionalAttr<CIR_InlineKindAttr>:$inline_kind
   );
 
   let regions = (region AnyRegion:$body);

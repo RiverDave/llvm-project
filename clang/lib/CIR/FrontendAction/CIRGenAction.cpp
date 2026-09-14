@@ -98,7 +98,11 @@ static std::unique_ptr<llvm::Module> lowerFromCIRToLLVMIR(
 static void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::BuiltinDialect, cir::CIRDialect,
                   mlir::memref::MemRefDialect, mlir::LLVM::LLVMDialect,
-                  mlir::DLTIDialect, mlir::omp::OpenMPDialect>();
+                  mlir::DLTIDialect, mlir::omp::OpenMPDialect,
+                  // Offload CIR (host/device staging) carries gpu.module,
+                  // gpu.func, gpu.launch_func plus arith/func/ROCDL ops.
+                  mlir::gpu::GPUDialect, mlir::ROCDL::ROCDLDialect,
+                  mlir::arith::ArithDialect, mlir::func::FuncDialect>();
   cir::omp::registerOpenMPExtensions(registry);
 }
 
@@ -108,7 +112,9 @@ static void prepareCIRInputContext(mlir::MLIRContext &context) {
   context.appendDialectRegistry(registry);
   context.loadDialect<cir::CIRDialect, mlir::memref::MemRefDialect,
                       mlir::LLVM::LLVMDialect, mlir::DLTIDialect,
-                      mlir::omp::OpenMPDialect>();
+                      mlir::omp::OpenMPDialect, mlir::gpu::GPUDialect,
+                      mlir::ROCDL::ROCDLDialect, mlir::arith::ArithDialect,
+                      mlir::func::FuncDialect>();
 }
 
 static void reportError(CompilerInstance &CI, llvm::Twine message) {
@@ -133,6 +139,16 @@ parseCIRInput(CompilerInstance &CI, mlir::MLIRContext &context,
     reportError(CI, "failed to parse CIR input");
     return {};
   }
+  // The offload merge leaves declaration-only cir.func ops with public
+  // visibility (MLIR requires declarations to be private), so normalize them
+  // before verifying.
+  module->walk([](cir::FuncOp fn) {
+    if (fn.isDeclaration() &&
+        mlir::SymbolTable::getSymbolVisibility(fn) ==
+            mlir::SymbolTable::Visibility::Public)
+      mlir::SymbolTable::setSymbolVisibility(
+          fn, mlir::SymbolTable::Visibility::Private);
+  });
   if (mlir::failed(mlir::verify(*module))) {
     reportError(CI, "failed to verify CIR input");
     return {};
@@ -579,7 +595,8 @@ void CIRGenAction::ExecuteAction() {
     // Fall back to offload.target on the parsed module (stamped during codegen
     // or when the .cir file was written).
     if (offloadArchs.empty())
-      if (auto archs = MLIRMod->getAttrOfType<mlir::ArrayAttr>("offload.target"))
+      if (auto archs =
+              (*MLIRMod)->getAttrOfType<mlir::ArrayAttr>("offload.target"))
         for (auto arch : archs)
           if (auto s = mlir::dyn_cast<mlir::StringAttr>(arch))
             offloadArchs.push_back(s.getValue().str());
@@ -604,10 +621,10 @@ void CIRGenAction::ExecuteAction() {
   offloadConfig.deadArgElimination = !CGO.ClangIRNoDeadArgElim;
   offloadConfig.promoteConstantArgs = CGO.ClangIRPromoteConstantArgs;
   offloadConfig.unrollBarrierLoops = !CGO.ClangIRNoUnrollBarrierLoops;
-  offloadConfig.unsafeMathOpt = MLIRMod->hasAttr("cir.unsafe_fp_math");
-  offloadConfig.finiteOnly = MLIRMod->hasAttr("cir.finite_math_only");
+  offloadConfig.unsafeMathOpt = (*MLIRMod)->hasAttr("cir.unsafe_fp_math");
+  offloadConfig.finiteOnly = (*MLIRMod)->hasAttr("cir.finite_math_only");
   offloadConfig.daz = offloadConfig.unsafeMathOpt;
-  offloadConfig.fpContractFast = MLIRMod->hasAttr("cir.fp_contract_fast");
+  offloadConfig.fpContractFast = (*MLIRMod)->hasAttr("cir.fp_contract_fast");
   std::unique_ptr<llvm::Module> LLVMModule = lowerFromCIRToLLVMIR(
       *MLIRMod, *Ctx, /*EnableOpenMP=*/false, mlirSaveTempsOutFile,
       &CI.getVirtualFileSystem(), CGO.ClangIROffload, offloadArchs,
