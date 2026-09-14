@@ -97,11 +97,11 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK: builtin.module @device_0
+// CHECK: module @device_0
 // CHECK: cir.func @kern_multiarch(%arg0: !s32i) cc(ptx_kernel)
 // CHECK-NEXT: %[[C0:.*]] = cir.const #cir.int<7> : !s32i
 // CHECK-NEXT: cir.call @use_multiarch(%[[C0]])
-// CHECK: builtin.module @device_1
+// CHECK: module @device_1
 // CHECK: cir.func @kern_multiarch(%arg0: !s32i) cc(ptx_kernel)
 // CHECK-NEXT: %[[C1:.*]] = cir.const #cir.int<7> : !s32i
 // CHECK-NEXT: cir.call @use_multiarch(%[[C1]])

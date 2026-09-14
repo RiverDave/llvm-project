@@ -9,8 +9,8 @@
 // RUN: cir-opt %t/combined.cir --verify-roundtrip -o /dev/null
 
 // BASIC: module attributes {cir.offload.container} {
-// BASIC-NEXT: builtin.module @host attributes {cir.offload.bundle_id = "host-x86_64-unknown-linux-gnu", cir.offload.kind = #cir.offload<host>, cir.triple = "x86_64-unknown-linux-gnu"} {
-// BASIC: builtin.module @device_cuda_nvptx64_nvidia_cuda__sm_80 attributes {cir.offload.bundle_id = "cuda-nvptx64-nvidia-cuda--sm_80", cir.offload.kind = #cir.offload<device>, cir.triple = "nvptx64-nvidia-cuda"} {
+// BASIC-NEXT: module @host attributes {cir.offload.bundle_id = "host-x86_64-unknown-linux-gnu", cir.offload.kind = #cir.offload<host>, cir.triple = "x86_64-unknown-linux-gnu"} {
+// BASIC: module @device_cuda_nvptx64_nvidia_cuda__sm_80 attributes {cir.offload.bundle_id = "cuda-nvptx64-nvidia-cuda--sm_80", cir.offload.kind = #cir.offload<device>, cir.triple = "nvptx64-nvidia-cuda"} {
 
 // RUN: cir-offload-merge -split \
 // RUN:   -input=%t/combined.cir \
@@ -35,9 +35,9 @@
 // RUN: cir-opt %t/reordered.cir --verify-roundtrip -o /dev/null
 
 // REORDER: module attributes {cir.offload.container} {
-// REORDER-NEXT: builtin.module @host
-// REORDER: builtin.module @device_cuda_nvptx64_nvidia_cuda__sm_90
-// REORDER: builtin.module @device_cuda_nvptx64_nvidia_cuda__sm_80
+// REORDER-NEXT: module @host
+// REORDER: module @device_cuda_nvptx64_nvidia_cuda__sm_90
+// REORDER: module @device_cuda_nvptx64_nvidia_cuda__sm_80
 
 // RUN: cir-offload-merge -split \
 // RUN:   -input=%t/reordered.cir \
