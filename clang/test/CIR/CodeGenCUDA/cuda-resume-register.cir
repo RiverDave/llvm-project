@@ -20,7 +20,7 @@
 // RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-llvm %s -o %t.nogpu.ll
 // RUN: FileCheck --input-file=%t.nogpu.ll %s --check-prefix=NOGPUBIN
 
-module {
+module attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
   cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
     cir.return
   }
@@ -29,10 +29,9 @@ module {
 // Typed as the fatbin global's array type, matching recordDeviceBinary, so
 // LoweringPrepare can use the attribute as the initializer as-is.
 // ATTR: cir.cu.device_binary = "GPU binary would be here." : !cir.array<!u8i x 25>
-// ATTR: cir.global "private" constant cir_private @__cuda_fatbin_str
-// ATTR-SAME: section = ".nv_fatbin"
-// ATTR: cir.func internal private @__cuda_module_ctor()
-// ATTR: cir.call @__cudaRegisterFatBinary(
+
+// Registration happens during lowering, so the globals only exist in the
+// backend output, not in the -emit-cir dump above.
 
 // The registration reaches the object file.
 // LLVM: @__cuda_fatbin_str = {{.*}}constant

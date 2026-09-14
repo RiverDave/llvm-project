@@ -16,7 +16,7 @@
 // RUN: %clang_cc1 -triple x86_64-linux-gnu -aux-triple amdgcn-amd-amdhsa \
 // RUN:   -x cir -emit-llvm %s -o - | FileCheck %s --check-prefix=NOFATBIN
 
-module {
+module attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
   cir.global external @_Z6kernelv = #cir.ptr<null> : !cir.ptr<!cir.func<()>>
   cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
     cir.return
