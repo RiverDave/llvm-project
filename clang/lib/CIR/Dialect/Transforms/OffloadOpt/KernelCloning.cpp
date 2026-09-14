@@ -23,7 +23,7 @@ using namespace cir;
 // verify, under assertions, an invariant assumed when reusing an existing
 // specialization clone in place.
 static bool sitesCoverAllLaunches(const cir::KernelBinding &binding,
-                                   llvm::ArrayRef<cir::LaunchSite> sites) {
+                                  llvm::ArrayRef<cir::LaunchSite> sites) {
   llvm::SmallPtrSet<mlir::Operation *, 4> requested;
   for (const cir::LaunchSite &site : sites)
     requested.insert(static_cast<mlir::Operation *>(site.stubCall));
@@ -35,7 +35,9 @@ static bool sitesCoverAllLaunches(const cir::KernelBinding &binding,
 
 // Determine unique names for a clone of a kernel and stub. Each clone's name is
 // a concatenation of base and suffix. If a name is already taken, the
-// candidate name is extended with a number separated by a dot.
+// candidate name is extended with a number separated by an underscore.
+// TODO: This implementation can cause compilation-time blowup if the names
+//       occurs frequently. Consider a more efficient approach.
 static std::tuple<std::string, std::string>
 uniqueNames(cir::OffloadContainerOp container, llvm::StringRef baseKernelName,
             llvm::StringRef baseStubName, llvm::StringRef suffix) {
@@ -49,7 +51,7 @@ uniqueNames(cir::OffloadContainerOp container, llvm::StringRef baseKernelName,
     if (!taken.contains(candidate))
       return candidate;
     for (unsigned i = 1;; ++i) {
-      std::string next = candidate + "." + std::to_string(i);
+      std::string next = candidate + "_" + std::to_string(i);
       if (!taken.contains(next))
         return next;
     }
@@ -65,8 +67,10 @@ static cir::GetGlobalOp findHandleRead(cir::FuncOp stub,
                                        llvm::StringRef kernelName) {
   cir::GetGlobalOp found;
   stub.walk([&](cir::GetGlobalOp get) {
-    if (get.getName() == kernelName)
-      found = get;
+    if (get.getName() != kernelName)
+      return mlir::WalkResult::advance();
+    found = get;
+    return mlir::WalkResult::interrupt();
   });
   return found;
 }
@@ -153,9 +157,8 @@ std::optional<cir::KernelClone> cir::cloneKernelForSites(
 }
 
 cir::SpecializationTarget cir::getSpecializationTarget(
-    cir::OffloadContainerOp container, llvm::StringRef kernelName,
-    const cir::KernelBinding &binding, llvm::StringRef suffix,
-    llvm::ArrayRef<cir::LaunchSite> sites) {
+    cir::OffloadContainerOp container, const cir::KernelBinding &binding,
+    llvm::StringRef suffix, llvm::ArrayRef<cir::LaunchSite> sites) {
   if (!binding.hostStub || sites.empty())
     return {};
 

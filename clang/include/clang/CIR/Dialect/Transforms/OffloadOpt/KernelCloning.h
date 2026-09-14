@@ -70,9 +70,8 @@ struct SpecializationTarget {
 // is needed, the target is the clone. If neither is possible, the target is
 // empty.
 SpecializationTarget getSpecializationTarget(
-    cir::OffloadContainerOp container, llvm::StringRef kernelName,
-    const cir::KernelBinding &binding, llvm::StringRef suffix,
-    llvm::ArrayRef<cir::LaunchSite> sites);
+    cir::OffloadContainerOp container, const cir::KernelBinding &binding,
+    llvm::StringRef suffix, llvm::ArrayRef<cir::LaunchSite> sites);
 
 } // namespace cir
 
