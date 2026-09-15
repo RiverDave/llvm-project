@@ -6610,6 +6610,12 @@ InputInfoList Driver::BuildJobsForActionNoCache(
 
   ActionList Inputs = A->getInputs();
 
+  // TEMP instrumentation
+  if (!isa<JobAction>(A))
+    llvm::errs() << "[dbg] job builder visiting non-job action: "
+                 << A->getClassName() << "/type" << (int)A->getType()
+                 << " inputs=" << A->getInputs().size() << "\n";
+
   const JobAction *JA = cast<JobAction>(A);
   ActionList CollapsedOffloadActions;
 
