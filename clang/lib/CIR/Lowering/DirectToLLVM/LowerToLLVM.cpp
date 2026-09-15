@@ -10415,12 +10415,16 @@ void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
     pm.nest<mlir::gpu::GPUModuleOp>().addPass(
         createConvertCIRInGpuModulePass());
     if (!isDeviceCompilation) {
-      // Host cc1: compile the device-side gpu.module to a HSACo binary and
+      // Host cc1: compile the device-side gpu.module to a device binary and
       // embed it as a gpu.BinaryOp.  On a device cc1 (triple=amdgcn), the
       // entire module IS the device code — skip binary compilation and let
       // ConvertCIRToLLVMPass emit LLVM IR directly for the GPU.
-      pm.nest<mlir::gpu::GPUModuleOp>().addPass(
-          mlir::createConvertGpuOpsToROCDLOps());
+      // The ROCDL conversion is HIP-only: it rewrites gpu.func into llvm.func
+      // without carrying the kernel marker, which empties the CUDA cubin.  The
+      // NVVM target translates the gpu.func kernels itself.
+      if (!offloadConfig.isCUDA)
+        pm.nest<mlir::gpu::GPUModuleOp>().addPass(
+            mlir::createConvertGpuOpsToROCDLOps());
       // Fold constant operations so that constexpr arguments to
       // __asm("llvm.*") intrinsics survive as immediates (required by the
       // LLVM verifier for immarg parameters).
