@@ -54,6 +54,10 @@ struct CIROffloadConfig {
 
   // FP contraction (FMA fusion) — true for CUDA/HIP (FPM_Fast default).
   bool fpContractFast = false;
+
+  // Device offload kind being lowered: true for CUDA (nvptx), false for HIP
+  // (amdgcn). Selects the gpu.module target attribute (nvvm vs rocdl).
+  bool isCUDA = false;
 };
 
 namespace direct {

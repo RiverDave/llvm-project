@@ -48,6 +48,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Target/LLVM/ROCDL/Target.h"
+#include "mlir/Target/LLVM/NVVM/Target.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
@@ -10250,7 +10251,10 @@ void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
     // emitted by CIRGen directly into the gpu.module and converted to
     // llvm.mlir.global by CIRToLLVMGlobalOpLowering inside
     // ConvertCIRInGpuModulePass's applyPartialConversion.
-    // Attach #rocdl.target attributes to gpu.modules.
+    // Attach the device target attribute to gpu.modules: #nvvm.target for CUDA,
+    // #rocdl.target otherwise.  transformGpuModulesToBinaries dispatches on this
+    // attribute, so the wrong dialect hands the module to the wrong serializer
+    // (an AMDGPU one for sm_86, which cannot compile it).
     //
     // Single-source mode: the GpuSplitSingleSource pass produced one gpu.module
     // named @offload_device_module.  We attach ALL targets to that one module;
@@ -10263,25 +10267,24 @@ void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
     //
     // We emit both kinds of pass and let the regex filter determine which
     // gpu.module each pass touches.  A module that doesn't match is silently
-    // skipped by GpuROCDLAttachTarget.
-    //
-    // (CUDA would substitute createGpuNVVMAttachTargetPass here.)
+    // skipped by the attach-target passes.
     for (const std::string &arch : offloadArchs) {
       // Two-pass: stamp target on @offload_device_module_<arch> only.
-      {
-        mlir::GpuROCDLAttachTargetOptions rocdlOpts;
-        rocdlOpts.chip = arch;
-        rocdlOpts.triple = "amdgcn-amd-amdhsa";
-        rocdlOpts.abiVersion = "600";
-        rocdlOpts.optLevel = deviceOptLevel;
-        rocdlOpts.unsafeMathFlag = offloadConfig.unsafeMathOpt;
-        rocdlOpts.finiteOnlyFlag = offloadConfig.finiteOnly;
-        rocdlOpts.correctSqrtFlag = offloadConfig.correctSqrt;
-        rocdlOpts.moduleMatcher = "^offload_device_module_" + arch + "$";
-        pm.addPass(mlir::createGpuROCDLAttachTarget(rocdlOpts));
-      }
       // Single-source: stamp target on @offload_device_module (exact match).
-      {
+      for (const std::string &moduleMatcher :
+           {std::string("^offload_device_module_") + arch + "$",
+            std::string("^offload_device_module$")}) {
+        if (offloadConfig.isCUDA) {
+          mlir::GpuNVVMAttachTargetOptions nvvmOpts;
+          nvvmOpts.chip = arch;
+          nvvmOpts.triple = "nvptx64-nvidia-cuda";
+          nvvmOpts.optLevel = deviceOptLevel;
+          nvvmOpts.fastFlag = offloadConfig.unsafeMathOpt;
+          nvvmOpts.ftzFlag = offloadConfig.daz;
+          nvvmOpts.moduleMatcher = moduleMatcher;
+          pm.addPass(mlir::createGpuNVVMAttachTarget(nvvmOpts));
+          continue;
+        }
         mlir::GpuROCDLAttachTargetOptions rocdlOpts;
         rocdlOpts.chip = arch;
         rocdlOpts.triple = "amdgcn-amd-amdhsa";
@@ -10290,7 +10293,7 @@ void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
         rocdlOpts.unsafeMathFlag = offloadConfig.unsafeMathOpt;
         rocdlOpts.finiteOnlyFlag = offloadConfig.finiteOnly;
         rocdlOpts.correctSqrtFlag = offloadConfig.correctSqrt;
-        rocdlOpts.moduleMatcher = "^offload_device_module$";
+        rocdlOpts.moduleMatcher = moduleMatcher;
         pm.addPass(mlir::createGpuROCDLAttachTarget(rocdlOpts));
       }
     }
@@ -10368,6 +10371,8 @@ std::unique_ptr<llvm::Module> lowerDirectlyFromCIRToLLVMIR(
     // ROCDL TargetAttrInterface: required by GpuModuleToBinaryPass to serialize
     // the gpu.module to a device binary via the AMDGPU backend.
     mlir::ROCDL::registerROCDLTargetInterfaceExternalModels(registry);
+    // NVVM TargetAttrInterface: the CUDA counterpart, same requirement.
+    mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
     mlir::arith::registerConvertArithToLLVMInterface(registry);
     mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
     mlir::registerConvertFuncToLLVMInterface(registry);

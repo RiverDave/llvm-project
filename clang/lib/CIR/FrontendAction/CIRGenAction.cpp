@@ -473,6 +473,7 @@ public:
       offloadConfig.finiteOnly =
           LO.FastMath || (LO.NoHonorNaNs && LO.NoHonorInfs);
       offloadConfig.daz = LO.FastMath || LO.UnsafeFPMath;
+      offloadConfig.isCUDA = LO.CUDA;
       std::unique_ptr<llvm::Module> LLVMModule = lowerFromCIRToLLVMIR(
           MlirModule, LLVMCtx, C.getLangOpts().OpenMP, mlirSaveTempsOutFile,
           &CI.getVirtualFileSystem(), CGO.ClangIROffload, offloadArchs,
@@ -625,6 +626,10 @@ void CIRGenAction::ExecuteAction() {
   offloadConfig.finiteOnly = (*MLIRMod)->hasAttr("cir.finite_math_only");
   offloadConfig.daz = offloadConfig.unsafeMathOpt;
   offloadConfig.fpContractFast = (*MLIRMod)->hasAttr("cir.fp_contract_fast");
+  // The device triple recorded in the module decides the device target
+  // attribute (nvvm for CUDA, rocdl otherwise) when gpu.modules are serialized.
+  if (auto triple = (*MLIRMod)->getAttrOfType<mlir::StringAttr>("cir.triple"))
+    offloadConfig.isCUDA = triple.getValue().starts_with("nvptx");
   std::unique_ptr<llvm::Module> LLVMModule = lowerFromCIRToLLVMIR(
       *MLIRMod, *Ctx, /*EnableOpenMP=*/false, mlirSaveTempsOutFile,
       &CI.getVirtualFileSystem(), CGO.ClangIROffload, offloadArchs,
