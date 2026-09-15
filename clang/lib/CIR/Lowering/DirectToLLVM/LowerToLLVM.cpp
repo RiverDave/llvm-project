@@ -7225,6 +7225,16 @@ struct CIRGpuModuleToBinaryPass
         moduleConstVars[gpuMod.getName()] = std::move(constVars);
     });
 
+    // Kernels reach serialization as internal-linkage llvm.funcs with no kernel
+    // marker, so the device optimizer's DCE removes them and the cubin comes out
+    // with no .entry (empty symbol table). Keep every function inside a
+    // gpu.module alive by making it externally visible; the NVPTX backend then
+    // emits it and the loader can resolve it.
+    module.walk([&](mlir::gpu::GPUModuleOp gm) {
+      for (mlir::LLVM::LLVMFuncOp fn : gm.getOps<mlir::LLVM::LLVMFuncOp>())
+        fn.setLinkage(mlir::LLVM::Linkage::External);
+    });
+
     // The gpu.binary payload is loaded by the runtime wrappers with
     // cuModuleLoadData / hipModuleLoadData, which take a cubin / hsaco object --
     // a fatbin container is rejected (CUDA_ERROR_INVALID_IMAGE). Compile to the
