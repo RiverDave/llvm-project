@@ -53,6 +53,7 @@
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
+#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -10383,6 +10384,9 @@ std::unique_ptr<llvm::Module> lowerDirectlyFromCIRToLLVMIR(
     mlir::registerConvertOpenMPToLLVMInterface(registry);
     mlir::ub::registerConvertUBToLLVMInterface(registry);
     mlir::vector::registerConvertVectorToLLVMInterface(registry);
+    // CUDA device modules carry nvvm ops (the CIR llvm-intrinsics lower onto
+    // them), so the NVVM conversion interface has to be registered too.
+    mlir::registerConvertNVVMToLLVMInterface(registry);
     mlirCtx->appendDialectRegistry(registry);
 
     // Register dialect translations needed by transformGpuModulesToBinaries
