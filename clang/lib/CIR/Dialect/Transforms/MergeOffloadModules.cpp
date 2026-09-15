@@ -503,6 +503,33 @@ struct MergeOffloadModulesPass
         launch.setKernelsAttr(mlir::ArrayAttr::get(ctx, newRefs));
       });
     }
+
+    // MLIR prints an empty single block as "({})" and re-parsing that gives a
+    // zero-block region, which the SymbolTable verifier rejects -- so the
+    // archless module cannot be written out empty (the resume compilation reads
+    // it back). It is only left empty when every device module carried an
+    // offload.target and therefore merged into a per-arch module instead.
+    // Mirror those kernels into it as declarations, since the launch ops keep
+    // referencing it.
+    if (auto archless = hostModule.lookupSymbol<cir::OffloadModuleOp>(
+            "offload_device_module")) {
+      if (archless.getBody().empty())
+        archless.getBody().emplaceBlock();
+      OpBuilder b(ctx);
+      b.setInsertionPointToEnd(&archless.getBody().front());
+      for (cir::OffloadModuleOp mod : mergedModules) {
+        if (mod.getSymName() == "offload_device_module")
+          continue;
+        for (cir::OffloadFuncOp fn : mod.getOps<cir::OffloadFuncOp>()) {
+          if (!fn.isKernel())
+            continue;
+          if (archless.lookupSymbol<cir::OffloadFuncOp>(fn.getSymName()))
+            continue;
+          cir::OffloadFuncOp::create(b, fn.getLoc(), fn.getSymName(),
+                                     fn.getFunctionType(), /*isKernel=*/true);
+        }
+      }
+    }
   }
 };
 
