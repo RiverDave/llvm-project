@@ -43,6 +43,9 @@ add_clang_library(clangCIRLoweringDirectToLLVM
   MLIROpenMPTransforms
   MLIRROCDLTarget
   MLIRROCDLToLLVMIRTranslation
+  MLIRGPUToNVVMTransforms
+  MLIRNVVMTarget
+  MLIRNVVMToLLVMIRTranslation
   MLIRIR
   )
 
