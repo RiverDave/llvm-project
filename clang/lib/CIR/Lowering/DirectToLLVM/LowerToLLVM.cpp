@@ -7219,8 +7219,16 @@ struct CIRGpuModuleToBinaryPass
         moduleConstVars[gpuMod.getName()] = std::move(constVars);
     });
 
+    // The gpu.binary payload is loaded by the runtime wrappers with
+    // cuModuleLoadData / hipModuleLoadData, which take a cubin / hsaco object --
+    // a fatbin container is rejected (CUDA_ERROR_INVALID_IMAGE). Compile to the
+    // plain binary object instead of the default fatbin.
+    mlir::gpu::TargetOptions targetOptions(
+        /*toolkitPath=*/{}, /*librariesToLink=*/{}, /*cmdOptions=*/{},
+        /*elfSection=*/{}, mlir::gpu::CompilationTarget::Binary);
     // Pass null handler here so the per-module handler is used.
-    if (mlir::failed(mlir::gpu::transformGpuModulesToBinaries(module)))
+    if (mlir::failed(mlir::gpu::transformGpuModulesToBinaries(
+            module, nullptr, targetOptions)))
       return signalPassFailure();
 
     // Collect kernel→stub mapping from cir.func ops with cu.kernel_name.
