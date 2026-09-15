@@ -6775,6 +6775,12 @@ struct CIRGpuModuleToBinaryPass
            "targetless modules";
   }
 
+  explicit CIRGpuModuleToBinaryPass(bool isCUDA = false) : isCUDA(isCUDA) {}
+
+  /// CUDA device objects are loaded straight by cuModuleLoadData; only HIP wraps
+  /// them in a per-arch bundle.
+  bool isCUDA = false;
+
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
@@ -7296,7 +7302,11 @@ struct CIRGpuModuleToBinaryPass
     // Collect all gpu.binary ops whose name starts with "offload_device_module_"
     // (i.e. two-pass per-arch binaries).  If there are none, we're in
     // single-source mode and nothing needs to be done.
-    bundlePerArchBinaries(module);
+    // The HIP bundle wrapper is what the HIP runtime expects; the CUDA runtime
+    // wrappers hand the payload straight to cuModuleLoadData, so a wrapped blob
+    // is unloadable (CUDA_ERROR_INVALID_IMAGE).
+    if (!isCUDA)
+      bundlePerArchBinaries(module);
 
     // Rewrite gpu.launch_func kernel refs from per-arch module names
     // (@offload_device_module_<arch>) to the bundled binary name
@@ -7530,8 +7540,8 @@ struct CIRGpuModuleToBinaryPass
   }
 };
 
-std::unique_ptr<mlir::Pass> createCIRGpuModuleToBinaryPass() {
-  return std::make_unique<CIRGpuModuleToBinaryPass>();
+std::unique_ptr<mlir::Pass> createCIRGpuModuleToBinaryPass(bool isCUDA) {
+  return std::make_unique<CIRGpuModuleToBinaryPass>(isCUDA);
 }
 
 //===----------------------------------------------------------------------===//
@@ -10357,7 +10367,7 @@ void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
       pm.nest<mlir::gpu::GPUModuleOp>().addPass(mlir::createCanonicalizerPass());
       // CIRGpuModuleToBinaryPass: compiles targeted gpu.module ops to binaries;
       // silently erases gpu.module ops without a target (no --offload-arch).
-      pm.addPass(createCIRGpuModuleToBinaryPass());
+      pm.addPass(createCIRGpuModuleToBinaryPass(offloadConfig.isCUDA));
     }
   }
   pm.addPass(createConvertCIRToLLVMPass());
