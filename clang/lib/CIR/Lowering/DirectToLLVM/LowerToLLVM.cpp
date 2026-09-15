@@ -53,6 +53,7 @@
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
+#include "mlir/Conversion/GPUToNVVM/GPUToNVVM.h"
 #include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
@@ -10427,9 +10428,11 @@ void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
       // embed it as a gpu.BinaryOp.  On a device cc1 (triple=amdgcn), the
       // entire module IS the device code — skip binary compilation and let
       // ConvertCIRToLLVMPass emit LLVM IR directly for the GPU.
-      // The ROCDL conversion is HIP-only: it rewrites gpu.func into llvm.func
-      // without carrying the kernel marker, which empties the CUDA cubin.  The
-      // NVVM target translates the gpu.func kernels itself.
+      // The ROCDL conversion rewrites gpu.func into llvm.func for the device
+      // serializer on HIP.  CUDA needs no pipeline pass: the NVVM target attr's
+      // ConvertToLLVMAttrInterface (registerConvertGpuToNVVMInterface, in the
+      // registry above) performs the same conversion inside
+      // transformGpuModulesToBinaries, carrying the kernel marker.
       if (!offloadConfig.isCUDA)
         pm.nest<mlir::gpu::GPUModuleOp>().addPass(
             mlir::createConvertGpuOpsToROCDLOps());
@@ -10484,6 +10487,9 @@ std::unique_ptr<llvm::Module> lowerDirectlyFromCIRToLLVMIR(
     mlir::ROCDL::registerROCDLTargetInterfaceExternalModels(registry);
     // NVVM TargetAttrInterface: the CUDA counterpart, same requirement.
     mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
+    // GPU→NVVM conversion lives on the target attr via ConvertToLLVMAttrInterface;
+    // without it the serializer sees bare gpu.func and fails to translate them.
+    mlir::NVVM::registerConvertGpuToNVVMInterface(registry);
     mlir::arith::registerConvertArithToLLVMInterface(registry);
     mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
     mlir::registerConvertFuncToLLVMInterface(registry);
