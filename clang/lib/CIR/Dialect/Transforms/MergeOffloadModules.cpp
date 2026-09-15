@@ -248,7 +248,8 @@ static void mergeDeviceModule(ModuleOp deviceModule,
       }
 
       bool isKernel = cirFn->hasAttr("cir.amdgpu-flat-work-group-size") ||
-                      cirFn->hasAttr("gpu.kernel");
+                      cirFn->hasAttr("gpu.kernel") ||
+                      cirFn.getCallingConv() == cir::CallingConv::PTXKernel;
 
       cir::FuncType cirFnTy = cirFn.getFunctionType();
 
