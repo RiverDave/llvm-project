@@ -373,7 +373,7 @@ struct MergeOffloadModulesPass
       // Standard and drop FMA fusion (3x SASS on 3DCONV). Propagate the device
       // policy onto the merged module.
       auto propagateFP = [&](llvm::StringRef name) {
-        if (auto v = deviceModule->getAttrOfType<mlir::StringAttr>(name))
+        if (auto v = deviceModule->getAttr(name))
           hostModule->setAttr(name, v);
       };
       propagateFP(cir::CIRDialect::getFPContractModeAttrName());
