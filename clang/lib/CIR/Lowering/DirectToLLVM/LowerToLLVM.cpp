@@ -7304,9 +7304,9 @@ struct CIRGpuModuleToBinaryPass
     // single-source mode and nothing needs to be done.
     // The HIP bundle wrapper is what the HIP runtime expects; the CUDA runtime
     // wrappers hand the payload straight to cuModuleLoadData, so a wrapped blob
-    // is unloadable (CUDA_ERROR_INVALID_IMAGE).
-    if (!isCUDA)
-      bundlePerArchBinaries(module);
+    // is unloadable (CUDA_ERROR_INVALID_IMAGE) -- the single-arch branch keeps
+    // the plain cubin for CUDA.
+    bundlePerArchBinaries(module, isCUDA);
 
     // Rewrite gpu.launch_func kernel refs from per-arch module names
     // (@offload_device_module_<arch>) to the bundled binary name
@@ -7369,7 +7369,7 @@ struct CIRGpuModuleToBinaryPass
   // For single-arch (N=1): rename the binary op in place.
   // For multi-arch (N>1): bundle into an HIP fat binary (clang-offload-bundle
   // format) that hipModuleLoadData can dispatch from at runtime.
-  void bundlePerArchBinaries(mlir::ModuleOp module) {
+  void bundlePerArchBinaries(mlir::ModuleOp module, bool isCUDA) {
     constexpr StringRef kBase = "offload_device_module";
 
     // Each logical device image becomes its own fat binary.  A HIP fat binary
@@ -7489,9 +7489,13 @@ struct CIRGpuModuleToBinaryPass
       mlir::gpu::BinaryOp only = archBinaries[0];
       auto origObj =
           mlir::dyn_cast<mlir::gpu::ObjectAttr>(only.getObjects()[0]);
+      // CUDA keeps the plain cubin (cuModuleLoadData rejects a bundle); HIP is
+      // wrapped in the __CLANG_OFFLOAD_BUNDLE__ container.
+      StringRef payload =
+          isCUDA ? origObj.getObject().getValue() : StringRef(fatBytes);
       auto bundledObj = mlir::gpu::ObjectAttr::get(
           origObj.getTarget(), origObj.getFormat(),
-          mlir::StringAttr::get(ctx, fatBytes),
+          mlir::StringAttr::get(ctx, payload),
           origObj.getProperties(), origObj.getKernels());
       archBinaries[0]->setAttr("objects",
           mlir::ArrayAttr::get(ctx, {bundledObj}));
