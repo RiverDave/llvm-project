@@ -10254,6 +10254,16 @@ std::unique_ptr<mlir::Pass> createConvertCIRToLLVMPass() {
   return std::make_unique<ConvertCIRToLLVMPass>();
 }
 
+// Debug only: dump the module when CIR_DUMP_BINARY is set, to trace where
+// device gpu.func kernels are rewritten during lowering.
+struct CIROffloadToGPUDumpPass
+    : public mlir::PassWrapper<CIROffloadToGPUDumpPass,
+                               mlir::OperationPass<mlir::ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CIROffloadToGPUDumpPass)
+  llvm::StringRef getArgument() const override { return "cir-offload-gpu-dump"; }
+  void runOnOperation() override { getOperation()->dump(); }
+};
+
 void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
                              bool enableOffloadSplit,
                              llvm::ArrayRef<std::string> offloadArchs,
@@ -10312,6 +10322,9 @@ void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
     // Convert cir.offload.* ops to GPU dialect. Runs after optimization
     // passes (which need single-source visibility) and before SplitSingleSource.
     pm.addPass(createConvertCIROffloadToGPUPass());
+    // Debug only: dump the module right after the offload->GPU conversion.
+    if (std::getenv("CIR_DUMP_BINARY"))
+      pm.addPass(std::make_unique<CIROffloadToGPUDumpPass>());
     // Note: cir.global device globals (shared, device, constant, managed) are
     // emitted by CIRGen directly into the gpu.module and converted to
     // llvm.mlir.global by CIRToLLVMGlobalOpLowering inside
