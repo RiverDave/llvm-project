@@ -626,10 +626,13 @@ void CIRGenAction::ExecuteAction() {
   offloadConfig.finiteOnly = (*MLIRMod)->hasAttr("cir.finite_math_only");
   offloadConfig.daz = offloadConfig.unsafeMathOpt;
   offloadConfig.fpContractFast = (*MLIRMod)->hasAttr("cir.fp_contract_fast");
-  // The device triple recorded in the module decides the device target
-  // attribute (nvvm for CUDA, rocdl otherwise) when gpu.modules are serialized.
-  if (auto triple = (*MLIRMod)->getAttrOfType<mlir::StringAttr>("cir.triple"))
-    offloadConfig.isCUDA = triple.getValue().starts_with("nvptx");
+  // The resume compiles device CIR for an offload target.  The host module's
+  // cir.triple is the host triple, so the device kind comes from the arch name:
+  // CUDA uses sm_/compute_, HIP uses gfx.
+  for (const std::string &arch : offloadArchs)
+    if (llvm::StringRef(arch).starts_with("sm_") ||
+        llvm::StringRef(arch).starts_with("compute_"))
+      offloadConfig.isCUDA = true;
   std::unique_ptr<llvm::Module> LLVMModule = lowerFromCIRToLLVMIR(
       *MLIRMod, *Ctx, /*EnableOpenMP=*/false, mlirSaveTempsOutFile,
       &CI.getVirtualFileSystem(), CGO.ClangIROffload, offloadArchs,
