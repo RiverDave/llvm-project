@@ -366,15 +366,17 @@ struct MergeOffloadModulesPass
       }
       ModuleOp deviceModule = *deviceModuleRef;
 
-      // The device CIR carries the frontend's device FP-contraction policy
-      // (Fast for CUDA); the host module's own stamp (e.g. "on") would have
-      // the resume reconstruct AllowFPOpFusion as Standard and drop FMA
-      // fusion in the device code. Propagate the device policy onto the
-      // merged module.
-      if (auto fpMode = deviceModule->getAttrOfType<mlir::StringAttr>(
-              cir::CIRDialect::getFPContractModeAttrName()))
-        hostModule->setAttr(cir::CIRDialect::getFPContractModeAttrName(),
-                            fpMode);
+      // The device CIR carries the frontend's device FP policy: the fp contract
+      // mode (Fast for CUDA) and the module attrs the lowering reads to set
+      // LLVM fastmath (cir.fp_contract_fast etc.). The host module's own stamps
+      // (e.g. "on") would have the resume reconstruct AllowFPOpFusion as
+      // Standard and drop FMA fusion (3x SASS on 3DCONV). Propagate the device
+      // policy onto the merged module.
+      for (llvm::StringRef attr :
+           {cir::CIRDialect::getFPContractModeAttrName(), "cir.fp_contract_fast",
+            "cir.unsafe_fp_math", "cir.finite_math_only"})
+        if (auto fpMode = deviceModule->getAttrOfType<mlir::StringAttr>(attr))
+          hostModule->setAttr(attr, fpMode);
 
       remapDeviceAnonTypes(hostModule, deviceModule);
 
