@@ -152,6 +152,9 @@ ArrayRef<Attribute> SerializeGPUModuleBase::getLibrariesToLink() const {
 
 // Try to append `libdevice` from a CUDA toolkit installation.
 LogicalResult SerializeGPUModuleBase::appendStandardLibs() {
+  // The toolkit lookup stats the CUDA installation: an expected access, so
+  // bypass the process IO sandbox for it (same escape hatch as LockFileManager).
+  auto bypass = llvm::sys::sandbox::scopedDisable();
 #if MLIR_NVVM_EMBED_LIBDEVICE
   // If libdevice is embedded in the binary, we don't look it up on the
   // filesystem.
@@ -205,6 +208,8 @@ LogicalResult SerializeGPUModuleBase::appendStandardLibs() {
 
 std::optional<SmallVector<std::unique_ptr<llvm::Module>>>
 SerializeGPUModuleBase::loadBitcodeFiles(llvm::Module &module) {
+  // Reads libdevice (and any other linked bitcode) from the toolkit path.
+  auto bypass = llvm::sys::sandbox::scopedDisable();
   SmallVector<std::unique_ptr<llvm::Module>> bcFiles;
   if (failed(loadBitcodeFilesFromList(module.getContext(), librariesToLink,
                                       bcFiles, true)))
