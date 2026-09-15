@@ -5673,6 +5673,9 @@ struct ConvertCIRInGpuModulePass
 
   void runOnOperation() override {
     mlir::gpu::GPUModuleOp gpuModule = getOperation();
+    // Debug: dump the gpu.module as this pass sees it (kernel attrs intact?).
+    if (std::getenv("CIR_DUMP_BINARY"))
+      gpuModule->dump();
     mlir::DataLayout dl(gpuModule);
     mlir::LLVMTypeConverter converter(&getContext());
     prepareTypeConverter(converter, dl);
