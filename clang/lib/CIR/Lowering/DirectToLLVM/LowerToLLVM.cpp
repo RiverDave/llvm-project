@@ -7308,6 +7308,23 @@ struct CIRGpuModuleToBinaryPass
     // the plain cubin for CUDA.
     bundlePerArchBinaries(module, isCUDA);
 
+    // Debug: write each gpu.binary payload to disk (no fatbin section keeps
+    // cuobjdump from finding it inside the host object) so the device symbols
+    // can be inspected.
+    if (const char *dumpDir = std::getenv("CIR_DUMP_BINARY")) {
+      module.walk([&](mlir::gpu::BinaryOp bin) {
+        for (mlir::Attribute obj : bin.getObjects())
+          if (auto oa = mlir::dyn_cast<mlir::gpu::ObjectAttr>(obj)) {
+            std::error_code ec;
+            llvm::raw_fd_ostream os(std::string(dumpDir) + "/" +
+                                        bin.getName().str() + ".cubin",
+                                    ec);
+            os << oa.getObject().getValue();
+            os.close();
+          }
+      });
+    }
+
     // Rewrite gpu.launch_func kernel refs from per-arch module names
     // (@offload_device_module_<arch>) to the bundled binary name
     // (@offload_device_module) so the runtime can find the fat binary.
