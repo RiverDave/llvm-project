@@ -7233,6 +7233,12 @@ struct CIRGpuModuleToBinaryPass
         /*toolkitPath=*/{}, /*librariesToLink=*/{}, /*cmdOptions=*/{},
         /*elfSection=*/{}, mlir::gpu::CompilationTarget::Binary);
     // Pass null handler here so the per-module handler is used.
+    if (const char *dumpDir = std::getenv("CIR_DUMP_BINARY")) {
+      std::error_code ec;
+      llvm::raw_fd_ostream preOs(std::string(dumpDir) + "/pre-bin.mlir", ec);
+      module.print(preOs);
+      preOs.close();
+    }
     if (mlir::failed(mlir::gpu::transformGpuModulesToBinaries(
             module, nullptr, targetOptions)))
       return signalPassFailure();
