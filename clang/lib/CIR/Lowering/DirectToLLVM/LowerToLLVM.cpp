@@ -5108,7 +5108,8 @@ struct ConvertCIROffloadToGPUPass
 
         // Convert cir.return terminators to gpu.return inside the new gpu.func.
         for (mlir::Block &blk : gpuFn.getBody()) {
-          if (auto ret = dyn_cast<cir::ReturnOp>(blk.getTerminator())) {
+          if (auto ret = dyn_cast<cir::ReturnOp>(blk.mightHaveTerminator() ? blk.getTerminator()
+                                                       : nullptr)) {
             mlir::OpBuilder::InsertionGuard rg(builder);
             builder.setInsertionPoint(ret);
             mlir::gpu::ReturnOp::create(builder, ret.getLoc(),
@@ -6011,7 +6012,8 @@ struct ConvertCIRInGpuModulePass
     // the main CIR→LLVM conversion (which would turn them into llvm.return).
     gpuModule.walk([&](mlir::gpu::GPUFuncOp fn) {
       for (mlir::Block &blk : fn.getBody()) {
-        if (auto ret = dyn_cast<cir::ReturnOp>(blk.getTerminator())) {
+        if (auto ret = dyn_cast<cir::ReturnOp>(blk.mightHaveTerminator() ? blk.getTerminator()
+                                                       : nullptr)) {
           mlir::OpBuilder b(ret);
           mlir::gpu::ReturnOp::create(b, ret.getLoc(), ret.getOperands());
           ret.erase();
