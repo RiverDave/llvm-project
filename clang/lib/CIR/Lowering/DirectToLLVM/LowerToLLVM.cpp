@@ -73,6 +73,7 @@
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/IOSandbox.h"
 #include "llvm/Support/Path.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -6776,6 +6777,13 @@ struct CIRGpuModuleToBinaryPass
 
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
+
+    // Device serialization stats the toolkit path, links libdevice, optimizes
+    // the module and shells out to ptxas/fatbinary, then reads their output
+    // back. Those are expected file-system reaches, which the compiler IO
+    // sandbox turns fatal on assertions builds (LLVM_ENABLE_IO_SANDBOX defaults
+    // to LLVM_ENABLE_ASSERTIONS).
+    auto bypass = llvm::sys::sandbox::scopedDisable();
 
     // Erase gpu.module ops with no target attributes (compiled without
     // --offload-arch). Also erase any gpu.launch_func that references them
