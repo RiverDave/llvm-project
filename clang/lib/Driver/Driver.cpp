@@ -5410,8 +5410,14 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
         // Propagate device offload info to the newly created CompileJobAction.
         A->propagateDeviceOffloadInfo(Kind, TCAndArch->second,
                                       TCAndArch->first);
-        if (A->getType() == types::TY_CIR_DEVICE)
-          DeviceCIRs.push_back(A);
+        if (A->getType() == types::TY_CIR_DEVICE) {
+          // Bind the device arch: without it the job builder emits a host job
+          // for the device CIR (host triple + device CPU).
+          Action *DeviceCIR = C.MakeAction<BindArchAction>(A, TCAndArch->second);
+          DeviceCIR->propagateDeviceOffloadInfo(Kind, TCAndArch->second,
+                                                TCAndArch->first);
+          DeviceCIRs.push_back(DeviceCIR);
+        }
         ++TCAndArch;
       }
       if (!DeviceCIRs.empty()) {
