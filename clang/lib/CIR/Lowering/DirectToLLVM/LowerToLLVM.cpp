@@ -54,7 +54,9 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVM.h"
+#include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
 #include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -7242,6 +7244,33 @@ struct CIRGpuModuleToBinaryPass
       if (!constVars.empty())
         moduleConstVars[gpuMod.getName()] = std::move(constVars);
     });
+
+    // CUDA: convert the device gpu.funcs to LLVM/NVVM dialect before
+    // serialization -- the NVVM serializer's translation path needs
+    // pre-converted module contents, same as upstream's convert-gpu-to-nvvm.
+    // GPUFuncOpLowering marks kernels with nvvm.kernel so the NVPTX backend
+    // emits .entry for them.
+    if (isCUDA) {
+      bool convFailed = false;
+      module.walk([&](mlir::gpu::GPUModuleOp gpuMod) {
+        mlir::DataLayout dl(gpuMod);
+        mlir::LLVMTypeConverter converter(&getContext());
+        prepareTypeConverter(converter, dl);
+        mlir::RewritePatternSet patterns(&getContext());
+        mlir::populateGpuToNVVMConversionPatterns(converter, patterns);
+        mlir::ConversionTarget target(getContext());
+        target.addIllegalDialect<mlir::gpu::GPUDialect>();
+        target.addLegalDialect<mlir::LLVM::LLVMDialect,
+                               mlir::NVVM::NVVMDialect, mlir::arith::ArithDialect,
+                               mlir::func::FuncDialect>();
+        target.addLegalOp<mlir::gpu::GPUModuleOp>();
+        if (failed(mlir::applyPartialConversion(gpuMod, target,
+                                                std::move(patterns))))
+          convFailed = true;
+      });
+      if (convFailed)
+        return signalPassFailure();
+    }
 
     // Kernels reach serialization as internal-linkage llvm.funcs with no kernel
     // marker, so the device optimizer's DCE removes them and the cubin comes out
