@@ -4986,6 +4986,14 @@ struct ConvertCIROffloadToGPUPass
 
     // Step 1: Convert cir.offload.module → gpu.module, and
     //         cir.offload.func → gpu.func inside them.
+    // Every kernel the launch ops reference must be marked a kernel, even when
+    // offload passes re-clone the function under a new name without carrying
+    // the kernel unit-attribute (e.g. tighten-launch-bounds $maxN clones).
+    llvm::DenseSet<llvm::StringRef> launchKernels;
+    module.walk([&](cir::OffloadKernelLaunchOp launch) {
+      launchKernels.insert(launch.getKernelLeafName());
+    });
+
     SmallVector<cir::OffloadModuleOp> offloadModules;
     module.walk([&](cir::OffloadModuleOp m) { offloadModules.push_back(m); });
 
@@ -5035,8 +5043,10 @@ struct ConvertCIROffloadToGPUPass
         auto gpuFn = mlir::gpu::GPUFuncOp::create(
             builder, fnLoc, offloadFn.getSymName(), mlirFTy);
 
-        // Set kernel attribute if present.
-        if (offloadFn.isKernel())
+        // Set kernel attribute if present (or if a launch op references this func:
+        // offload passes may clone kernels without carrying the attr).
+        if (offloadFn.isKernel() ||
+            launchKernels.contains(offloadFn.getSymName()))
           gpuFn.setKernelAttr(mlir::UnitAttr::get(ctx));
 
         // gpu.func has no inline-kind field of its own, so route the request
