@@ -10441,6 +10441,10 @@ void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
       pm.addPass(createCIRGpuModuleToBinaryPass(offloadConfig.isCUDA));
     }
   }
+  // Debug: dump the module after the device-serialization section, before the
+  // final CIR→LLVM lowering, to see which gpu ops survive.
+  if (std::getenv("CIR_DUMP_BINARY"))
+    pm.addPass(std::make_unique<CIROffloadToGPUDumpPass>());
   pm.addPass(createConvertCIRToLLVMPass());
   if (enableOpenMP)
     pm.addPass(mlir::omp::createHostOpFilteringPass());
