@@ -7267,8 +7267,11 @@ struct CIRGpuModuleToBinaryPass
       preOs.close();
     }
     if (mlir::failed(mlir::gpu::transformGpuModulesToBinaries(
-            module, nullptr, targetOptions)))
+            module, nullptr, targetOptions))) {
+      module.emitError("CIRGpuModuleToBinary: transformGpuModulesToBinaries "
+                       "failed; no device binary was produced");
       return signalPassFailure();
+    }
 
     // Collect kernel→stub mapping from cir.func ops with cu.kernel_name.
     llvm::StringMap<std::string> kernelToStub;
