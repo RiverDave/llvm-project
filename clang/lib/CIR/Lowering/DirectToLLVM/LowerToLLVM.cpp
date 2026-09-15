@@ -10407,6 +10407,11 @@ void populateCIRToLLVMPasses(mlir::OpPassManager &pm, bool enableOpenMP,
       case cir::DeadKernelAction::None:
         splitOpts.deadKernelAction = "none"; break;
       }
+      // The split/DKE machinery is single-source/HIP-oriented: on the CUDA
+      // two-pass path it strips the nvvm targets that were just stamped onto
+      // the per-arch modules, so nothing gets serialized.  Keep it inert there.
+      if (offloadConfig.isCUDA)
+        splitOpts.deadKernelAction = "none";
       pm.addPass(mlir::createGpuSplitSingleSourcePass(splitOpts));
     }
     // Lower CIR ops inside gpu.func bodies to LLVM dialect so they are ready
