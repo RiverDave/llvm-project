@@ -28,6 +28,7 @@
 #include "llvm/Transforms/Scalar/LoopUnrollPass.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Support/IOSandbox.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
@@ -70,6 +71,15 @@
 
 using namespace mlir;
 using namespace mlir::ROCDL;
+
+// Serialization writes its inputs to temporary files and reads them straight
+// back; those reads are expected, so bypass the process IO sandbox while
+// opening them (same escape hatch as LockFileManager).
+static llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
+getFileBypassingSandbox(const llvm::Twine &path, bool isText = true) {
+  auto bypass = llvm::sys::sandbox::scopedDisable();
+  return llvm::MemoryBuffer::getFile(path, isText);
+}
 
 #ifndef __DEFAULT_ROCM_PATH__
 #define __DEFAULT_ROCM_PATH__ ""
@@ -2356,7 +2366,7 @@ mlir::ROCDL::linkObjectCode(ArrayRef<char> objectCode, StringRef lldPath,
 
   // Load the HSA code object.
   auto hsacoFile =
-      llvm::MemoryBuffer::getFile(tempHsacoFilename, /*IsText=*/false);
+      getFileBypassingSandbox(tempHsacoFilename, /*IsText=*/false);
   if (!hsacoFile)
     return emitError()
            << "failed to read the HSA code object from the temp file";

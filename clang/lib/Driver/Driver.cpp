@@ -5393,10 +5393,11 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
     if (DeviceActions.empty())
       return HostAction;
 
-    // In ClangIR offload mode (-fclangir), HIP device actions stop at
+    // In ClangIR offload mode (-fclangir), CUDA/HIP device actions stop at
     // TY_CIR_DEVICE and are merged with the host CIR via CIRMergeJobAction
     // before any backend processing. Handle this before the phase loop.
-    if (Args.hasArg(options::OPT_fclangir) && Kind == Action::OFK_HIP) {
+    if (Args.hasArg(options::OPT_fclangir) &&
+        (Kind == Action::OFK_HIP || Kind == Action::OFK_Cuda)) {
       // Run only the Compile phase on each device action, producing
       // TY_CIR_DEVICE.  Collect ALL per-arch device CIR actions so that
       // MergeOffloadModules can create a separate gpu.module per arch.

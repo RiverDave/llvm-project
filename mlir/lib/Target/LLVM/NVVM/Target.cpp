@@ -33,6 +33,7 @@
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/IOSandbox.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
@@ -46,6 +47,15 @@
 
 using namespace mlir;
 using namespace mlir::NVVM;
+
+// Serialization writes its inputs to temporary files and reads them straight
+// back; those reads are expected, so bypass the process IO sandbox while
+// opening them (same escape hatch as LockFileManager).
+static llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
+getFileBypassingSandbox(const llvm::Twine &path, bool isText = true) {
+  auto bypass = llvm::sys::sandbox::scopedDisable();
+  return llvm::MemoryBuffer::getFile(path, isText);
+}
 
 #ifndef __DEFAULT_CUDATOOLKIT_PATH__
 #define __DEFAULT_CUDATOOLKIT_PATH__ ""
@@ -473,7 +483,7 @@ NVPTXSerializer::compileToBinary(StringRef ptxCode) {
       [&](StringRef toolName) -> FailureOr<SmallVector<char, 0>> {
     if (message.empty()) {
       llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> toolStderr =
-          llvm::MemoryBuffer::getFile(logFile->first);
+          getFileBypassingSandbox(logFile->first);
       if (toolStderr)
         return emitError(loc) << toolName << " invocation failed. Log:\n"
                               << toolStderr->get()->getBuffer();
@@ -494,7 +504,7 @@ NVPTXSerializer::compileToBinary(StringRef ptxCode) {
     return emitLogError("`ptxas`");
 
   if (target.hasFlag("collect-compiler-diagnostics")) {
-    if (auto logBuffer = llvm::MemoryBuffer::getFile(logFile->first))
+    if (auto logBuffer = getFileBypassingSandbox(logFile->first))
       isaCompilerLog = (*logBuffer)->getBuffer().str();
   }
 #define DEBUG_TYPE "dump-sass"
@@ -510,7 +520,7 @@ NVPTXSerializer::compileToBinary(StringRef ptxCode) {
                                   /*ErrMsg=*/&message))
       return emitLogError("`nvdisasm`");
     llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> logBuffer =
-        llvm::MemoryBuffer::getFile(logFile->first);
+        getFileBypassingSandbox(logFile->first);
     if (logBuffer && !(*logBuffer)->getBuffer().empty()) {
       LDBG() << "Output:\n" << (*logBuffer)->getBuffer();
       llvm::dbgs().flush();
@@ -532,7 +542,7 @@ NVPTXSerializer::compileToBinary(StringRef ptxCode) {
 #define DEBUG_TYPE "serialize-to-binary"
   LLVM_DEBUG({
     llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> logBuffer =
-        llvm::MemoryBuffer::getFile(logFile->first);
+        getFileBypassingSandbox(logFile->first);
     if (logBuffer && !(*logBuffer)->getBuffer().empty()) {
       LDBG() << "Output:\n" << (*logBuffer)->getBuffer();
       llvm::dbgs().flush();
@@ -542,7 +552,7 @@ NVPTXSerializer::compileToBinary(StringRef ptxCode) {
 
   // Read the fatbin.
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> binaryBuffer =
-      llvm::MemoryBuffer::getFile(binaryFile->first);
+      getFileBypassingSandbox(binaryFile->first);
   if (!binaryBuffer)
     return emitError(loc) << "Couldn't open the file: `" << binaryFile->first
                           << "`, error message: "
