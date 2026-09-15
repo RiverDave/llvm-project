@@ -54,6 +54,7 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
@@ -10390,6 +10391,7 @@ std::unique_ptr<llvm::Module> lowerDirectlyFromCIRToLLVMIR(
     mlir::registerLLVMDialectTranslation(*mlirCtx);
     mlir::registerGPUDialectTranslation(*mlirCtx);
     mlir::registerROCDLDialectTranslation(*mlirCtx);
+    mlir::registerNVVMDialectTranslation(*mlirCtx);
     // Register SelectObjectAttr's OffloadingLLVMTranslationAttrInterface so
     // that the gpu.BinaryOp offloading handler can be resolved during both
     // transformGpuModulesToBinaries and the later translateModuleToLLVMIR.
@@ -10455,6 +10457,7 @@ std::unique_ptr<llvm::Module> lowerDirectlyFromCIRToLLVMIR(
     // (RocmRuntimeWrappers.cpp).
     mlir::registerGPUDialectTranslation(*mlirCtx);
     mlir::registerROCDLDialectTranslation(*mlirCtx);
+    mlir::registerNVVMDialectTranslation(*mlirCtx);
   }
 
   // Fix function declaration linkage: LLVM requires declarations (external
