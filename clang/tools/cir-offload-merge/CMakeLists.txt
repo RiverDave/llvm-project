@@ -14,6 +14,7 @@ clang_target_link_libraries(cir-offload-merge
   CIROpenMPSupport
   MLIRCIR
   MLIRCIROffloadOpt
+  MLIRCIRTransforms
 )
 
 target_link_libraries(cir-offload-merge
