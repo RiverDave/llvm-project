@@ -5417,11 +5417,16 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
       if (!DeviceCIRs.empty()) {
         // The existing HostAction emits TY_LLVM_BC by default. Create a
         // TY_CIR host compile action from the same source input instead.
-        auto *HostCompile = dyn_cast<CompileJobAction>(HostAction);
+        // CUDA host actions may already be wrapped for fat-binary bundling,
+        // so unwrap to the compile that carries the source input.
+        Action *HostSrc = HostAction;
+        if (auto *OA = dyn_cast<OffloadAction>(HostAction))
+          HostSrc = OA->getHostDependence();
+        auto *HostCompile = dyn_cast<CompileJobAction>(HostSrc);
         Action *HostCIR = (HostCompile && !HostCompile->getInputs().empty())
                               ? C.MakeAction<CompileJobAction>(
                                     HostCompile->getInputs()[0], types::TY_CIR)
-                              : HostAction;
+                              : HostSrc;
         // MergeInputs = {host.cir, device_arch1.cir, ..., device_archN.cir}
         ActionList MergeInputs{HostCIR};
         MergeInputs.append(DeviceCIRs.begin(), DeviceCIRs.end());
