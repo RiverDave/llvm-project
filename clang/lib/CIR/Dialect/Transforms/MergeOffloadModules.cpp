@@ -366,6 +366,16 @@ struct MergeOffloadModulesPass
       }
       ModuleOp deviceModule = *deviceModuleRef;
 
+      // The device CIR carries the frontend's device FP-contraction policy
+      // (Fast for CUDA); the host module's own stamp (e.g. "on") would have
+      // the resume reconstruct AllowFPOpFusion as Standard and drop FMA
+      // fusion in the device code. Propagate the device policy onto the
+      // merged module.
+      if (auto fpMode = deviceModule->getAttrOfType<mlir::StringAttr>(
+              cir::CIRDialect::getFPContractModeAttrName()))
+        hostModule->setAttr(cir::CIRDialect::getFPContractModeAttrName(),
+                            fpMode);
+
       remapDeviceAnonTypes(hostModule, deviceModule);
 
       // If no arch was given on the command line, try reading it from the
