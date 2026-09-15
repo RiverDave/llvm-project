@@ -5411,9 +5411,12 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
         A->propagateDeviceOffloadInfo(Kind, TCAndArch->second,
                                       TCAndArch->first);
         if (A->getType() == types::TY_CIR_DEVICE) {
-          // Bind the device arch: without it the job builder emits a host job
+          // Carry the device toolchain/arch with the input, the way the
+          // fat-binary path does; otherwise the job builder emits a host job
           // for the device CIR (host triple + device CPU).
-          Action *DeviceCIR = C.MakeAction<BindArchAction>(A, TCAndArch->second);
+          OffloadAction::DeviceDependences Dep;
+          Dep.add(*A, *TCAndArch->first, TCAndArch->second, Kind);
+          Action *DeviceCIR = C.MakeAction<OffloadAction>(Dep, A->getType());
           DeviceCIR->propagateDeviceOffloadInfo(Kind, TCAndArch->second,
                                                 TCAndArch->first);
           DeviceCIRs.push_back(DeviceCIR);
