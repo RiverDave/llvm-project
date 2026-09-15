@@ -83,7 +83,7 @@ public:
     CIRStagingMergeJobClass,
 
     JobClassFirst = PreprocessJobClass,
-    JobClassLast = ObjcopyJobClass
+    JobClassLast = CIRStagingMergeJobClass
   };
 
   // The offloading kind determines if this action is binded to a particular

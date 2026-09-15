@@ -5430,16 +5430,6 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
         // MergeInputs = {host.cir, device_arch1.cir, ..., device_archN.cir}
         ActionList MergeInputs{HostCIR};
         MergeInputs.append(DeviceCIRs.begin(), DeviceCIRs.end());
-        // TEMP instrumentation
-        llvm::errs() << "[staging] HostAction=" << HostAction->getClassName()
-                     << "/type" << (int)HostAction->getType()
-                     << " | HostSrc=" << HostSrc->getClassName() << "/type"
-                     << (int)HostSrc->getType()
-                     << " | HostCIR=" << HostCIR->getClassName() << "/type"
-                     << (int)HostCIR->getType() << "\n";
-        for (Action *A : DeviceCIRs)
-          llvm::errs() << "[staging] dev=" << A->getClassName() << "/type"
-                       << (int)A->getType() << "\n";
         return C.MakeAction<CIRStagingMergeJobAction>(MergeInputs, types::TY_CIR);
       }
     }
@@ -6609,12 +6599,6 @@ InputInfoList Driver::BuildJobsForActionNoCache(
 
 
   ActionList Inputs = A->getInputs();
-
-  // TEMP instrumentation
-  if (!isa<JobAction>(A))
-    llvm::errs() << "[dbg] job builder visiting non-job action: "
-                 << A->getClassName() << "/type" << (int)A->getType()
-                 << " inputs=" << A->getInputs().size() << "\n";
 
   const JobAction *JA = cast<JobAction>(A);
   ActionList CollapsedOffloadActions;
