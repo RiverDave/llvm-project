@@ -267,4 +267,64 @@ def CallConvLowering : Pass<"cir-call-conv-lowering", "mlir::ModuleOp"> {
   ];
 }
 
+def OffloadDeadKernelElimination
+    : Pass<"cir-offload-dead-kernel-elimination", "mlir::ModuleOp"> {
+  let summary = "Remove device kernels that can never be launched";
+  let description = [{
+    Runs on an offload container module and deletes device kernels that are
+    provably unreachable, using the host<->device correspondence from
+    `KernelBindingTable`.
+
+    The pass is anchored on a module; it acts only when the module carries the
+    `cir.offload.container` unit attribute, leaving any other module alone.
+
+    A kernel is removed when it is not launchable outside this container:
+
+      - a host stub with internal linkage and no launch left (its device
+        kernels die with it), or
+      - a device kernel with no host stub at all -- a static/anonymous kernel
+        never launched in this TU, since an externally-linked kernel always
+        emits an external stub -- provided device code does not still
+        reference it (dynamic parallelism / address-taken).
+
+    Externally-linked kernels are always preserved: another TU may launch them
+    through their external host stub. Scoped to the non-RDC pipeline.
+
+    Dynamic parallelism follows NVIDIA's terminology: kernel A launches kernel B
+    from device code, so B has no host stub -- yet B is live and must be kept.
+    https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/dynamic-parallelism.html
+  }];
+  let constructor = "mlir::createOffloadDeadKernelEliminationPass()";
+  let dependentDialects = ["cir::CIRDialect"];
+}
+
+def OffloadKernelArgConstantPropagation
+    : Pass<"cir-offload-kernel-arg-const-prop", "mlir::ModuleOp"> {
+  let summary = "Propagate constant launch arguments into device kernels";
+  let description = [{
+    Runs on an offload container module. When every launch of a kernel passes
+    the same constant for a given argument, the uses of that argument inside
+    the device kernel are replaced by the constant.
+
+    The pass is anchored on a module; it acts only when the module carries the
+    `cir.offload.container` unit attribute, leaving any other module alone.
+
+    Only device code is rewritten. The kernel signature, the host argument
+    buffer and the registration of the kernel are all left alone, so the
+    argument simply becomes unused on the device side.
+
+    The rewrite requires every launch to be visible. That holds when the host
+    stub has internal linkage, so no other TU can call it, and every reference
+    to the stub outside its own body is a direct call: a stub whose address
+    escapes may be called indirectly with arguments this pass cannot see. The
+    stub always references itself, since it passes its own address to
+    `cudaLaunchKernel`.
+
+    Requires the launch arguments to already be constants at the call site,
+    which for anything but a literal means `mem2reg` and `sccp` have run.
+  }];
+  let constructor = "mlir::createOffloadKernelArgConstantPropagationPass()";
+  let dependentDialects = ["cir::CIRDialect"];
+}
+
 #endif // CLANG_CIR_DIALECT_PASSES_TD
