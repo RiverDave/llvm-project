@@ -194,6 +194,33 @@ LogicalResult cir::CIRDialect::verifyRegionResultAttribute(
 // Dialect attribute verification
 //===----------------------------------------------------------------------===//
 
+bool cir::isOffloadContainer(mlir::ModuleOp module) {
+  return module->hasAttr(cir::CIRDialect::getOffloadContainerAttrName());
+}
+
+mlir::ModuleOp cir::getOffloadContainerHostModule(mlir::ModuleOp container) {
+  assert(cir::isOffloadContainer(container) &&
+         "expected a module carrying the 'cir.offload.container' unit "
+         "attribute");
+  // Host module is the first op in the container region.
+  return mlir::cast<mlir::ModuleOp>(container.getBody()->front());
+}
+
+llvm::iterator_range<mlir::Block::op_iterator<mlir::ModuleOp>>
+cir::getOffloadContainerDeviceModules(mlir::ModuleOp container) {
+  assert(cir::isOffloadContainer(container) &&
+         "expected a module carrying the 'cir.offload.container' unit "
+         "attribute");
+  mlir::Block &body = *container.getBody();
+  auto begin = body.op_begin<mlir::ModuleOp>();
+  auto end = body.op_end<mlir::ModuleOp>();
+  // We represent device modules in the range of ops[1..n-1]
+  // where all elements beside ops[0] are device modules.
+  if (begin != end)
+    ++begin;
+  return {begin, end};
+}
+
 static LogicalResult verifyOffloadKind(mlir::ModuleOp module,
                                        cir::OffloadKind expected) {
   auto attr = module->getAttrOfType<cir::OffloadKindAttr>(

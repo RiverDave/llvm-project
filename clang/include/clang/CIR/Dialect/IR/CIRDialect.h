@@ -33,6 +33,7 @@
 #include "clang/CIR/Interfaces/CIRLoopOpInterface.h"
 #include "clang/CIR/Interfaces/CIROpInterfaces.h"
 #include "clang/CIR/MissingFeatures.h"
+#include "llvm/ADT/iterator_range.h"
 
 using BuilderCallbackRef =
     llvm::function_ref<void(mlir::OpBuilder &, mlir::Location)>;
@@ -99,6 +100,25 @@ RecordLayoutAttr getRecordLayout(mlir::ModuleOp mod, mlir::StringAttr name);
 /// Same lookup as getRecordLayout, but returns a null attribute instead of
 /// asserting when the record has no layout entry.
 RecordLayoutAttr tryGetRecordLayout(mlir::ModuleOp mod, mlir::StringAttr name);
+
+//===----------------------------------------------------------------------===//
+// Offload container helpers
+//===----------------------------------------------------------------------===//
+
+/// Whether `module` is an offload container, i.e. carries the
+/// `cir.offload.container` unit attribute.
+bool isOffloadContainer(mlir::ModuleOp module);
+
+/// The host module held by the offload container `container`, that is the
+/// first nested module. Asserts that `container` carries the
+/// `cir.offload.container` unit attribute.
+mlir::ModuleOp getOffloadContainerHostModule(mlir::ModuleOp container);
+
+/// The device modules held by the offload container `container`, that is every
+/// nested module after the host. Asserts that `container` carries the
+/// `cir.offload.container` unit attribute.
+llvm::iterator_range<mlir::Block::op_iterator<mlir::ModuleOp>>
+getOffloadContainerDeviceModules(mlir::ModuleOp container);
 } // namespace cir
 
 // TableGen'erated files for MLIR dialects require that a macro be defined when
