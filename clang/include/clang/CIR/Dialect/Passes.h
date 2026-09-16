@@ -46,6 +46,8 @@ std::unique_ptr<Pass> createGotoSolverPass();
 std::unique_ptr<Pass> createIdiomRecognizerPass();
 std::unique_ptr<Pass> createLibOptPass();
 std::unique_ptr<Pass> createLibOptPass(clang::ASTContext *astCtx);
+std::unique_ptr<Pass> createOffloadDeadKernelEliminationPass();
+std::unique_ptr<Pass> createOffloadKernelArgConstantPropagationPass();
 
 void populateCIRPreLoweringPasses(mlir::OpPassManager &pm);
 
