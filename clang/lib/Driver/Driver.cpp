@@ -4332,7 +4332,8 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
               C.MakeAction<InputAction>(*Input.second, DeviceInputType, CUID);
           DeviceAction->propagateDeviceOffloadInfo(Kind, Arch, TC);
 
-          auto PL = types::getCompilationPhases(*this, Args, DeviceInputType);
+          auto PL = types::getCompilationPhases(*this, Args, {Input},
+                                                DeviceInputType);
           for (phases::ID Phase : PL) {
             if (Phase == phases::Link)
               break;
