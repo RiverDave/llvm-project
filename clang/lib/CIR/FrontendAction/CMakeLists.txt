@@ -31,6 +31,7 @@ add_clang_library(clangCIRFrontendAction
   MLIRCIR
   MLIRCIRTargetLowering
   MLIRCIRTransforms
+  MLIRBytecodeWriter
   MLIRDLTIDialect
   MLIRIR
   )

@@ -184,7 +184,7 @@ void f3(union U3 u) {
 // LLVM:      define{{.*}} void @f3(%union.U3 %[[ARG:.*]])
 // LLVM-NEXT:   %[[U:.*]] = alloca %union.U3, align 1
 // LLVM-NEXT:   store %union.U3 %[[ARG]], ptr %[[U]], align 1
-// LLVM-NEXT:   %[[ELEM_PTR:.*]] = getelementptr [5 x i8], ptr %[[U]], i32 0, i64 2
+// LLVM-NEXT:   %[[ELEM_PTR:.*]] = getelementptr inbounds [5 x i8], ptr %[[U]], i32 0, i64 2
 // LLVM-NEXT:   store i8 0, ptr %[[ELEM_PTR]], align 1
 // LLVM-NEXT:   ret void
 
@@ -213,7 +213,7 @@ void f5(union U4 u) {
 // LLVM:      define{{.*}} void @f5(%union.U4 %[[ARG:.*]])
 // LLVM-NEXT:   %[[U:.*]] = alloca %union.U4, align 4
 // LLVM-NEXT:   store %union.U4 %[[ARG]], ptr %[[U]], align 4
-// LLVM-NEXT:   %[[ELEM_PTR:.*]] = getelementptr [5 x i8], ptr %[[U]], i32 0, i64 4
+// LLVM-NEXT:   %[[ELEM_PTR:.*]] = getelementptr inbounds [5 x i8], ptr %[[U]], i32 0, i64 4
 // LLVM-NEXT:   store i8 65, ptr %[[ELEM_PTR]], align 4
 // LLVM-NEXT:   ret void
 

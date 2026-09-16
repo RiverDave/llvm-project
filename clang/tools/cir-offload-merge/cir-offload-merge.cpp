@@ -59,6 +59,19 @@ llvm::cl::opt<bool> Combine("combine", llvm::cl::desc("Combine CIR inputs"),
 llvm::cl::opt<bool> Split("split", llvm::cl::desc("Split combined CIR input"),
                           llvm::cl::cat(CIROffloadMergeCategory));
 
+// Staging mode: the first -input is the host CIR (kernel launches carrying
+// cu.kernel_name / cir.offload.kernel_launch) and the remaining -input files are
+// the per-arch device CIR modules. Instead of wrapping everything in
+// cir.offload.container, run the offload-merge-modules pass so the device code
+// lands in cir.offload.module @offload_device_module[_<arch>] inside the host
+// module -- the shape the CIR offload lowering expects (gpu.launch_func needs a
+// gpu.binary to resolve, which that lowering builds from the merged modules).
+llvm::cl::opt<bool> Staging(
+    "staging",
+    llvm::cl::desc("Merge device CIR into the host module as cir.offload.module "
+                   "(offload-merge-modules semantics)"),
+    llvm::cl::cat(CIROffloadMergeCategory));
+
 llvm::cl::opt<bool> DisableCirInferLaunchBounds(
     "disable-cir-infer-launch-bounds",
     llvm::cl::desc("Disable launch-bound inference from host launch sites"),
@@ -347,6 +360,50 @@ int runOffloadOptPasses(mlir::ModuleOp module) {
   return 0;
 }
 
+// Run offload-merge-modules over the host module: host CIR is the base module,
+// every other input is a device CIR file merged in as
+// cir.offload.module @offload_device_module_<arch>. The arch of each device
+// module is taken from its own offload.target attribute, so callers can pass
+// bare paths.
+int writeModuleToOutput(mlir::ModuleOp module, llvm::StringRef outputFileName);
+
+int runStagingMerge(llvm::ArrayRef<std::string> inputs, llvm::StringRef output,
+                    mlir::MLIRContext &context) {
+  if (inputs.size() < 2)
+    return reportError("staging mode expects the host CIR plus at least one "
+                       "device CIR input");
+
+  mlir::ParserConfig parserConfig(&context, /*verifyAfterParse=*/false);
+  mlir::OwningOpRef<mlir::ModuleOp> hostModule =
+      mlir::parseSourceFile<mlir::ModuleOp>(inputs.front(), parserConfig);
+  if (!hostModule)
+    return reportError("failed to parse host CIR input");
+
+  std::string deviceOption;
+  for (llvm::StringRef device : llvm::drop_begin(inputs)) {
+    if (!deviceOption.empty())
+      deviceOption += ',';
+    deviceOption += device.str();
+  }
+
+  mlir::PassManager pm(&context, mlir::ModuleOp::getOperationName());
+  pm.enableVerifier(false);
+  std::unique_ptr<mlir::Pass> mergePass = mlir::createMergeOffloadModules();
+  auto onOptionError = [](const llvm::Twine &message) {
+    llvm::errs() << "cir-offload-merge: " << message << '\n';
+    return mlir::failure();
+  };
+  if (mlir::failed(mergePass->initializeOptions("device-cir=" + deviceOption,
+                                                onOptionError)))
+    return reportError("failed to configure offload-merge-modules");
+
+  pm.addPass(std::move(mergePass));
+  if (mlir::failed(pm.run(*hostModule)))
+    return reportError("offload-merge-modules failed");
+
+  return writeModuleToOutput(*hostModule, output);
+}
+
 int writeModuleToOutput(mlir::ModuleOp module, llvm::StringRef outputFileName) {
   std::string errorMessage;
   std::unique_ptr<llvm::ToolOutputFile> outputFile =
@@ -450,6 +507,12 @@ int main(int argc, char **argv) {
                       mlir::LLVM::LLVMDialect, mlir::DLTIDialect,
                       mlir::omp::OpenMPDialect>();
   context.appendDialectRegistry(registry);
+
+  if (Staging) {
+    if (OutputFileNames.size() != 1)
+      return reportError("staging mode expects exactly one output");
+    return runStagingMerge(InputFileNames, OutputFileNames.front(), context);
+  }
 
   if (Combine) {
     llvm::SmallVector<InputTarget, 4> inputTargets;

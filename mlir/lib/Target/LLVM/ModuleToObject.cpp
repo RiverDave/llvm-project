@@ -26,6 +26,7 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/IOSandbox.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -63,8 +64,9 @@ FailureOr<llvm::TargetMachine *> ModuleToObject::getOrCreateTargetMachine() {
            << "Failed to lookup target for triple '" << triple << "' " << error;
 
   // Create the target machine using the target.
-  targetMachine.reset(
-      target->createTargetMachine(parsedTriple, chip, features, {}, {}));
+  targetMachine.reset(target->createTargetMachine(
+      parsedTriple, chip, features, {}, {}, /*CM=*/std::nullopt,
+      static_cast<llvm::CodeGenOptLevel>(optLevel)));
   if (!targetMachine)
     return getOperation().emitError()
            << "Failed to create target machine for triple '" << triple << "'";
@@ -178,6 +180,10 @@ ModuleToObject::linkFiles(llvm::Module &module,
 LogicalResult ModuleToObject::optimizeModule(llvm::Module &module,
 
                                              int optLevel) {
+  // The optimizing transformer sets up machinery that takes a real file system
+  // view; the compiler IO sandbox blocks that reach, so bypass it for the
+  // serialization (same escape hatch as LockFileManager).
+  auto bypass = llvm::sys::sandbox::scopedDisable();
   if (optLevel < 0 || optLevel > 3)
     return getOperation().emitError()
            << "Invalid optimization level: " << optLevel << ".";

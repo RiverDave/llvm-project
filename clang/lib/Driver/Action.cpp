@@ -58,6 +58,8 @@ const char *Action::getClassName(ActionClass AC) {
     return "binary-translator";
   case ObjcopyJobClass:
     return "objcopy";
+  case CIRStagingMergeJobClass:
+    return "cir-merge";
   }
 
   llvm_unreachable("invalid class");
@@ -70,7 +72,8 @@ void Action::propagateDeviceOffloadInfo(OffloadKind OKind, BoundArch OArch,
     return;
   // Merge/split mix host and device inputs; stamp the node itself but do not
   // recurse, so device info never bleeds into the host CIR compile.
-  if (Kind == CIRSplitJobClass || Kind == CIRMergeJobClass) {
+  if (Kind == CIRSplitJobClass || Kind == CIRMergeJobClass ||
+      Kind == CIRStagingMergeJobClass) {
     assert((OffloadingDeviceKind == OKind || OffloadingDeviceKind == OFK_None) &&
            "Setting device kind to a different device??");
     OffloadingDeviceKind = OKind;
@@ -94,11 +97,21 @@ void Action::propagateDeviceOffloadInfo(OffloadKind OKind, BoundArch OArch,
 }
 
 void Action::propagateHostOffloadInfo(unsigned OKinds, BoundArch OArch) {
-  // Offload action set its own kinds on their dependences.
+  // Offload action sets its own kinds on their dependences.
+  // CIRMergeJobAction combines a host and a device action; propagate only to
+  // the host input (index 0) — the device input already has device offload
+  // kind.
   if (Kind == OffloadClass)
     return;
   if (Kind == CIRSplitJobClass)
     return;
+  if (Kind == CIRStagingMergeJobClass) {
+    ActiveOffloadKindMask |= OKinds;
+    OffloadingArch = OArch;
+    if (!Inputs.empty())
+      Inputs[0]->propagateHostOffloadInfo(ActiveOffloadKindMask, OArch);
+    return;
+  }
 
   assert(OffloadingDeviceKind == OFK_None &&
          "Setting a host kind in a device action.");
@@ -507,3 +520,9 @@ void ObjcopyJobAction::anchor() {}
 
 ObjcopyJobAction::ObjcopyJobAction(ActionList &Inputs, types::ID Type)
     : JobAction(ObjcopyJobClass, Inputs, Type) {}
+
+void CIRStagingMergeJobAction::anchor() {}
+
+CIRStagingMergeJobAction::CIRStagingMergeJobAction(ActionList &Inputs,
+                                                   types::ID Type)
+    : JobAction(CIRStagingMergeJobClass, Inputs, Type) {}

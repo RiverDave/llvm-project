@@ -3516,6 +3516,11 @@ class OffloadingActionBuilder final {
     Action::OffloadKind getAssociatedOffloadKind() {
       return AssociatedOffloadKind;
     }
+
+    /// In two-pass CIR offload mode, return the device CIR compile action that
+    /// should be merged with the host CIR action via CIRMergeJobAction.
+    /// Returns nullptr when not in two-pass mode or no device action is ready.
+    virtual Action *takeCIRDeviceActionForMerge() { return nullptr; }
   };
 
   /// Base class for CUDA/HIP action builder. It injects device code in
@@ -3834,6 +3839,11 @@ class OffloadingActionBuilder final {
     // --gpu-bundle-output is specified for device only compilation.
     std::optional<bool> BundleOutput;
     std::optional<bool> EmitReloc;
+    /// In two-pass CIR offload mode, the device Compile action (TY_CIR_DEVICE)
+    /// to be merged with the host TY_CIR output before the Backend phase.
+    /// Set during the Compile-phase getDeviceDependences call and consumed by
+    /// addDeviceDependencesToHostAction.
+    Action *DeviceCIRForMerge = nullptr;
 
   public:
     HIPActionBuilder(Compilation &C, DerivedArgList &Args,
@@ -3875,6 +3885,26 @@ class OffloadingActionBuilder final {
     getDeviceDependences(OffloadAction::DeviceDependences &DA,
                          phases::ID CurPhase, phases::ID FinalPhase,
                          PhasesTy &Phases) override {
+      // In ClangIR offload mode (-fclangir -clangir-offload), the device cc1
+      // runs only through the Compile phase (TY_CIR_DEVICE); later phases
+      // (Backend/Assemble/Link) are skipped because the merge step combines
+      // host.cir + device.cir before the backend.
+      if (Args.hasArg(options::OPT_fclangir)) {
+        if (CurPhase != phases::Compile)
+          return ABRT_Success;
+        // At the Compile phase: produce TY_CIR_DEVICE and store it for the
+        // merge step. Use the first GPU arch only (single-arch two-pass path).
+        if (!CudaDeviceActions.empty()) {
+          DeviceCIRForMerge = C.getDriver().ConstructPhaseAction(
+              C, Args, phases::Compile, CudaDeviceActions[0],
+              AssociatedOffloadKind);
+          CudaDeviceActions.clear();
+        }
+        // Return ABRT_Success with empty DDeps — no OffloadAction wrapper.
+        // The merge will be inserted in addDeviceDependencesToHostAction.
+        return ABRT_Success;
+      }
+
       if (!IsActive)
         return ABRT_Inactive;
 
@@ -4080,6 +4110,12 @@ class OffloadingActionBuilder final {
     Action* appendLinkHostActions(ActionList &AL) override { return AL.back(); }
 
     void appendLinkDependences(OffloadAction::DeviceDependences &DA) override {}
+
+    Action *takeCIRDeviceActionForMerge() override {
+      Action *A = DeviceCIRForMerge;
+      DeviceCIRForMerge = nullptr;
+      return A;
+    }
   };
 
   ///
@@ -4197,6 +4233,19 @@ public:
     if (IgnoringBuilders &&
         SpecializedBuilders.size() == (InactiveBuilders + IgnoringBuilders))
       return nullptr;
+
+    // In two-pass CIR offload mode, check if any builder has a device CIR
+    // action waiting to be merged with the host CIR action.
+    for (auto *SB : SpecializedBuilders) {
+      if (!SB->isValid())
+        continue;
+      if (Action *DevCIR = SB->takeCIRDeviceActionForMerge()) {
+        // Replace the host Compile action with a CIRMergeJobAction that
+        // combines host.cir (HostAction) and device.cir (DevCIR).
+        ActionList MergeInputs{HostAction, DevCIR};
+        return C.MakeAction<CIRStagingMergeJobAction>(MergeInputs, types::TY_CIR);
+      }
+    }
 
     if (DDeps.getActions().empty())
       return HostAction;
@@ -5344,6 +5393,56 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
     if (DeviceActions.empty())
       return HostAction;
 
+    // In ClangIR offload mode (-fclangir), CUDA/HIP device actions stop at
+    // TY_CIR_DEVICE and are merged with the host CIR via CIRMergeJobAction
+    // before any backend processing. Handle this before the phase loop.
+    if (Args.hasArg(options::OPT_fclangir) &&
+        (Kind == Action::OFK_HIP || Kind == Action::OFK_Cuda)) {
+      // Run only the Compile phase on each device action, producing
+      // TY_CIR_DEVICE.  Collect ALL per-arch device CIR actions so that
+      // MergeOffloadModules can create a separate gpu.module per arch.
+      auto *TCAndArch = TCAndArchs.begin();
+      ActionList DeviceCIRs;
+      for (Action *&A : DeviceActions) {
+        A->propagateDeviceOffloadInfo(Kind, TCAndArch->second,
+                                      TCAndArch->first);
+        A = ConstructPhaseAction(C, Args, phases::Compile, A, Kind);
+        // Propagate device offload info to the newly created CompileJobAction.
+        A->propagateDeviceOffloadInfo(Kind, TCAndArch->second,
+                                      TCAndArch->first);
+        if (A->getType() == types::TY_CIR_DEVICE) {
+          // Carry the device toolchain/arch with the input, the way the
+          // fat-binary path does; otherwise the job builder emits a host job
+          // for the device CIR (host triple + device CPU).
+          OffloadAction::DeviceDependences Dep;
+          Dep.add(*A, *TCAndArch->first, TCAndArch->second, Kind);
+          Action *DeviceCIR = C.MakeAction<OffloadAction>(Dep, A->getType());
+          DeviceCIR->propagateDeviceOffloadInfo(Kind, TCAndArch->second,
+                                                TCAndArch->first);
+          DeviceCIRs.push_back(DeviceCIR);
+        }
+        ++TCAndArch;
+      }
+      if (!DeviceCIRs.empty()) {
+        // The existing HostAction emits TY_LLVM_BC by default. Create a
+        // TY_CIR host compile action from the same source input instead.
+        // CUDA host actions may already be wrapped for fat-binary bundling,
+        // so unwrap to the compile that carries the source input.
+        Action *HostSrc = HostAction;
+        if (auto *OA = dyn_cast<OffloadAction>(HostAction))
+          HostSrc = OA->getHostDependence();
+        auto *HostCompile = dyn_cast<CompileJobAction>(HostSrc);
+        Action *HostCIR = (HostCompile && !HostCompile->getInputs().empty())
+                              ? C.MakeAction<CompileJobAction>(
+                                    HostCompile->getInputs()[0], types::TY_CIR)
+                              : HostSrc;
+        // MergeInputs = {host.cir, device_arch1.cir, ..., device_archN.cir}
+        ActionList MergeInputs{HostCIR};
+        MergeInputs.append(DeviceCIRs.begin(), DeviceCIRs.end());
+        return C.MakeAction<CIRStagingMergeJobAction>(MergeInputs, types::TY_CIR);
+      }
+    }
+
     // FIXME: Do not collapse the host side for Darwin targets with SYCL offload
     // compilations. The toolchain is not properly initialized for the target.
     if (isa<CompileJobAction>(HostAction) && Kind == Action::OFK_SYCL &&
@@ -5608,6 +5707,13 @@ Action *Driver::ConstructPhaseAction(
     return C.MakeAction<PrecompileJobAction>(Input, OutputTy);
   }
   case phases::Compile: {
+    // In ClangIR offload mode (-fclangir), the device Compile action outputs
+    // TY_CIR_DEVICE (device CIR, consumed by CIRMergeJobAction).
+    if (Args.hasArg(options::OPT_fclangir) &&
+        (TargetDeviceOffloadKind == Action::OFK_HIP ||
+         TargetDeviceOffloadKind == Action::OFK_Cuda))
+      return C.MakeAction<CompileJobAction>(Input, types::TY_CIR_DEVICE);
+
     if (Args.hasArg(options::OPT_fsyntax_only))
       return C.MakeAction<CompileJobAction>(Input, types::TY_Nothing);
     if (Args.hasArg(options::OPT_rewrite_objc))
@@ -5629,6 +5735,7 @@ Action *Driver::ConstructPhaseAction(
       return C.MakeAction<VerifyPCHJobAction>(Input, types::TY_Nothing);
     if (Args.hasArg(options::OPT_extract_api))
       return C.MakeAction<ExtractAPIJobAction>(Input, types::TY_API_INFO);
+
     return C.MakeAction<CompileJobAction>(Input, types::TY_LLVM_BC);
   }
   case phases::Backend: {
@@ -6541,6 +6648,28 @@ InputInfoList Driver::BuildJobsForActionNoCache(
           /*AtTopLevel=*/false,
           /*MultipleArchs=*/!Dep.DependentBoundArch.empty(),
           LinkingOutput, CachedResults, BuildKind));
+    }
+  } else if (isa<CIRStagingMergeJobAction>(JA)) {
+    // Staging merge (AMD-flavoured two-pass flow): Inputs[0] is host.cir and
+    // is built with the host toolchain; Inputs[1..N] are per-arch device CIR
+    // files built with the HIP device toolchain.
+    if (Inputs.size() >= 2) {
+      InputInfos.append(BuildJobsForAction(C, Inputs[0], TC, BA,
+                                           /*AtTopLevel=*/false, MultipleArchs,
+                                           LinkingOutput, CachedResults,
+                                           Action::OFK_None));
+      auto HIPTCRange = C.getOffloadToolChains(Action::OFK_HIP);
+      const ToolChain *DevTC =
+          (HIPTCRange.first != HIPTCRange.second) ? HIPTCRange.first->second
+                                                  : TC;
+      bool multiDevice = (Inputs.size() > 2);
+      for (size_t i = 1; i < Inputs.size(); ++i) {
+        BoundArch DevArch = Inputs[i]->getOffloadingArch();
+        InputInfos.append(BuildJobsForAction(
+            C, Inputs[i], DevTC, DevArch, /*AtTopLevel=*/false,
+            /*MultipleArchs=*/multiDevice, LinkingOutput, CachedResults,
+            Action::OFK_HIP));
+      }
     }
   } else {
   for (const Action *Input : Inputs) {
