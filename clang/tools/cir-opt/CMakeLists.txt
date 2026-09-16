@@ -20,6 +20,7 @@ clang_target_link_libraries(cir-opt
   CIRRegisterAllDialects
   MLIRCIR
   MLIRCIRTransforms
+  MLIRCIROffloadOpt
 )
 
 target_link_libraries(cir-opt
