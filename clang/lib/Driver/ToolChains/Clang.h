@@ -167,11 +167,13 @@ public:
                     const InputInfo &Output, const InputInfoList &Inputs,
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
+  // The split mode writes one output per target; unlike the base Tool, this is
+  // called directly by the driver for a CIRSplitJobAction, not via an override.
   void ConstructJobMultipleOutputs(Compilation &C, const JobAction &JA,
                                    const InputInfoList &Outputs,
                                    const InputInfoList &Inputs,
                                    const llvm::opt::ArgList &TCArgs,
-                                   const char *LinkingOutput) const override;
+                                   const char *LinkingOutput) const;
 };
 
 /// Offload binary tool.

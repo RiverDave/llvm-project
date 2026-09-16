@@ -3408,6 +3408,63 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
   }
 }
 
+// Wrap each device cubin and its ptx into per-target offload dependences and
+// link them into a single CUDA fatbinary.
+static Action *buildCudaFatBinary(Compilation &C,
+                                  ArrayRef<Action *> AssembleActions,
+                                  ArrayRef<const ToolChain *> ToolChains,
+                                  ArrayRef<const char *> BoundArchs) {
+  assert(AssembleActions.size() == ToolChains.size() &&
+         AssembleActions.size() == BoundArchs.size());
+  ActionList DeviceActions;
+  for (unsigned I = 0, E = AssembleActions.size(); I != E; ++I) {
+    Action *Assemble = AssembleActions[I];
+    assert(Assemble->getType() == types::TY_Object);
+    Action *Backend = Assemble->getInputs()[0];
+    assert(Backend->getType() == types::TY_PP_Asm);
+    for (Action *A : {Assemble, Backend}) {
+      OffloadAction::DeviceDependences DDep;
+      DDep.add(*A, *ToolChains[I], BoundArch(BoundArchs[I]), Action::OFK_Cuda);
+      DeviceActions.push_back(C.MakeAction<OffloadAction>(DDep, A->getType()));
+    }
+  }
+  if (DeviceActions.empty())
+    return nullptr;
+  return C.MakeAction<LinkJobAction>(DeviceActions, types::TY_CUDA_FATBIN);
+}
+
+// Lower each device CIR to bitcode, package the per-arch images into one
+// offload binary (llvm-offload-binary) and emit the HIP fat binary via
+// clang-linker-wrapper, matching the new offload driver (see the HIPNoRDC path
+// in BuildOffloadingActions).
+static Action *buildHipFatBinary(Compilation &C,
+                                 ArrayRef<Action *> DeviceActions,
+                                 ArrayRef<const ToolChain *> ToolChains,
+                                 ArrayRef<const char *> BoundArchs) {
+  assert(DeviceActions.size() == ToolChains.size() &&
+         DeviceActions.size() == BoundArchs.size());
+  ActionList OffloadActions;
+  for (unsigned I = 0, E = DeviceActions.size(); I != E; ++I) {
+    Action *Bitcode =
+        C.MakeAction<BackendJobAction>(DeviceActions[I], types::TY_LLVM_BC);
+    Bitcode->propagateDeviceOffloadInfo(Action::OFK_HIP, BoundArch(BoundArchs[I]),
+                                        ToolChains[I]);
+    // Wrap with the arch + toolchain so the packager records the per-image
+    // triple/arch/kind.
+    OffloadAction::DeviceDependences DDep;
+    DDep.add(*Bitcode, *ToolChains[I], BoundArch(BoundArchs[I]), Action::OFK_HIP);
+    OffloadActions.push_back(
+        C.MakeAction<OffloadAction>(DDep, types::TY_LLVM_BC));
+  }
+  if (OffloadActions.empty())
+    return nullptr;
+  Action *Packager =
+      C.MakeAction<OffloadPackagerJobAction>(OffloadActions, types::TY_Image);
+  ActionList WrapperInput{Packager};
+  return C.MakeAction<LinkerWrapperJobAction>(WrapperInput,
+                                              types::TY_HIP_FATBIN);
+}
+
 void Driver::handleArguments(Compilation &C, DerivedArgList &Args,
                              const InputList &Inputs,
                              ActionList &Actions) const {
@@ -3615,6 +3672,16 @@ static bool shouldBundleHIPAsm(const Compilation &C,
   return HasAMDGCNHIPDevice;
 }
 
+// True when the ClangIR host/device offload-merge pipeline is requested for a
+// CUDA/HIP compilation.
+static bool isCIROffloadMerge(const Compilation &C,
+                              const llvm::opt::ArgList &Args) {
+  return Args.hasArg(options::OPT_fclangir) &&
+         Args.hasArg(options::OPT_clangir_offload_merge) &&
+         (C.isOffloadingHostKind(Action::OFK_Cuda) ||
+          C.isOffloadingHostKind(Action::OFK_HIP));
+}
+
 void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
                           const InputList &Inputs, ActionList &Actions) const {
   llvm::PrettyStackTraceString CrashInfo("Building compilation actions");
@@ -3715,9 +3782,81 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
       // later actions in the same command line?
 
       // Otherwise construct the appropriate action.
-      Action *NewCurrent =
-          ConstructPhaseAction(C, Args, Phase, Current, Action::OFK_None,
-                               C.getDefaultToolChain().getLTOMode(Args));
+      Action *NewCurrent = nullptr;
+      // CIR offload split produces host/device CIR dependences under one
+      // OffloadAction. Apply backend phases to each dependence separately.
+      if (isCIROffloadMerge(C, Args) &&
+          (Phase == phases::Backend || Phase == phases::Assemble)) {
+        if (auto *OA = dyn_cast<OffloadAction>(Current)) {
+          OffloadAction::DeviceDependences DDeps;
+          // CUDA and HIP are mutually exclusive, so one set of per-arch device
+          // inputs serves whichever fatbin builder applies. The collected
+          // element differs by kind: a cubin AssembleJobAction for CUDA, the
+          // device CIR for HIP.
+          SmallVector<Action *, 4> DeviceActions;
+          SmallVector<const ToolChain *, 4> DeviceToolChains;
+          SmallVector<const char *, 4> DeviceArchs;
+          Action::OffloadKind FatbinKind = Action::OFK_None;
+          OA->doOnEachDeviceDependence(
+              [&](Action *DepA, const ToolChain *DepTC,
+                  BoundArch DepBoundArch) {
+                Action::OffloadKind Kind = DepA->getOffloadingDeviceKind();
+
+                // HIP packages the device CIR at the backend phase; the
+                // resulting fat binary passes through the assemble phase
+                // untouched (it is not TY_PP_Asm).
+                if (Kind == Action::OFK_HIP && Phase == phases::Backend) {
+                  FatbinKind = Kind;
+                  DeviceActions.push_back(DepA);
+                  DeviceToolChains.push_back(DepTC);
+                  DeviceArchs.push_back(DepBoundArch.ArchName.data());
+                  return;
+                }
+
+                Action *DeviceAction =
+                    ConstructPhaseAction(C, Args, Phase, DepA, Kind);
+                DeviceAction->propagateDeviceOffloadInfo(Kind, DepBoundArch,
+                                                         DepTC);
+
+                if (Kind == Action::OFK_Cuda &&
+                    isa<AssembleJobAction>(DeviceAction)) {
+                  FatbinKind = Kind;
+                  DeviceActions.push_back(DeviceAction);
+                  DeviceToolChains.push_back(DepTC);
+                  DeviceArchs.push_back(DepBoundArch.ArchName.data());
+                  return;
+                }
+
+                DDeps.add(*DeviceAction, *DepTC, DepBoundArch, Kind);
+              });
+
+          Action *Fatbin = nullptr;
+          if (FatbinKind == Action::OFK_Cuda)
+            Fatbin = buildCudaFatBinary(C, DeviceActions, DeviceToolChains,
+                                        DeviceArchs);
+          else if (FatbinKind == Action::OFK_HIP)
+            Fatbin = buildHipFatBinary(C, DeviceActions, DeviceToolChains,
+                                       DeviceArchs);
+          // All arches share the single device toolchain of their kind; the
+          // merged fatbin is arch-agnostic, so any collected TC serves here.
+          if (Fatbin)
+            DDeps.add(*Fatbin, *DeviceToolChains.front(),
+                      /*BoundArch=*/BoundArch(), FatbinKind);
+
+          Action *HostAction = OA->getHostDependence();
+          HostAction = ConstructPhaseAction(C, Args, Phase, HostAction);
+
+          OffloadAction::HostDependence HDep(
+              *HostAction, *C.getSingleOffloadToolChain<Action::OFK_Host>(),
+              /*BoundArch=*/BoundArch(), DDeps);
+          NewCurrent = C.MakeAction<OffloadAction>(HDep, DDeps);
+        }
+      }
+
+      if (!NewCurrent)
+        NewCurrent =
+            ConstructPhaseAction(C, Args, Phase, Current, Action::OFK_None,
+                                 C.getDefaultToolChain().getLTOMode(Args));
 
       // We didn't create a new action, so we will just move to the next phase.
       if (NewCurrent == Current)
@@ -4155,6 +4294,92 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
         getFinalPhase(Args, {Input}) == phases::Preprocess))
     return HostAction;
 
+  // For CUDA/HIP with ClangIR, merge serialized host/device CIR modules and
+  // split them again before the backend consumes each module with -x cir.
+  if (isCIROffloadMerge(C, Args) && !Args.hasArg(options::OPT_emit_cir) &&
+      isa<CompileJobAction>(HostAction) &&
+      HostAction->getType() == types::TY_CIR) {
+    ActionList MergeInputs;
+    MergeInputs.push_back(HostAction);
+
+    struct CIROffloadDep final {
+      const ToolChain *TC = nullptr;
+      clang::BoundArch Arch;
+      Action::OffloadKind Kind = Action::OFK_None;
+    };
+    SmallVector<CIROffloadDep, 6> Deps;
+    Deps.push_back({C.getSingleOffloadToolChain<Action::OFK_Host>(),
+                    BoundArch(), Action::OFK_Host});
+
+    const Action::OffloadKind CIRKinds[] = {Action::OFK_Cuda,
+                                            Action::OFK_HIP};
+    for (Action::OffloadKind Kind : CIRKinds) {
+      if ((Kind == Action::OFK_Cuda && !types::isCuda(Input.first)) ||
+          (Kind == Action::OFK_HIP && !types::isHIP(Input.first)))
+        continue;
+
+      SmallVector<const ToolChain *, 2> ToolChains;
+      auto TCRange = C.getOffloadToolChains(Kind);
+      for (auto TI = TCRange.first, TE = TCRange.second; TI != TE; ++TI)
+        ToolChains.push_back(TI->second);
+
+      for (const ToolChain *TC : ToolChains) {
+        for (BoundArch Arch : getOffloadArchs(C, Args, Kind, *TC)) {
+          types::ID DeviceInputType =
+              Kind == Action::OFK_HIP ? types::TY_HIP_DEVICE
+                                      : types::TY_CUDA_DEVICE;
+          Action *DeviceAction =
+              C.MakeAction<InputAction>(*Input.second, DeviceInputType, CUID);
+          DeviceAction->propagateDeviceOffloadInfo(Kind, Arch, TC);
+
+          auto PL = types::getCompilationPhases(*this, Args, DeviceInputType);
+          for (phases::ID Phase : PL) {
+            if (Phase == phases::Link)
+              break;
+            DeviceAction = ConstructPhaseAction(C, Args, Phase, DeviceAction,
+                                                Kind);
+            if (Phase == phases::Compile)
+              break;
+          }
+
+          if (DeviceAction->getType() != types::TY_CIR)
+            return HostAction;
+
+          MergeInputs.push_back(DeviceAction);
+          Deps.push_back({TC, Arch, Kind});
+        }
+      }
+    }
+
+    if (MergeInputs.size() == 1)
+      return HostAction;
+
+    // The host CIR compile sits below the split barrier, so host offload-kind
+    // propagation never reaches it. Stamp it directly so the host cc1 gets the
+    // CUDA setup (AddCudaIncludeArgs, -aux-triple) the stock host compile gets.
+    unsigned HostKinds = 0;
+    for (const CIROffloadDep &Dep : ArrayRef(Deps).drop_front())
+      HostKinds |= Dep.Kind;
+    HostAction->setHostOffloadInfo(HostKinds, /*OArch=*/BoundArch());
+
+    auto *Merge = C.MakeAction<CIRMergeJobAction>(MergeInputs);
+    for (const CIROffloadDep &Dep : Deps)
+      Merge->registerDependentActionInfo(Dep.TC, Dep.Arch, Dep.Kind);
+
+    auto *Split = C.MakeAction<CIRSplitJobAction>(Merge);
+    for (const CIROffloadDep &Dep : Deps)
+      Split->registerDependentActionInfo(Dep.TC, Dep.Arch, Dep.Kind);
+
+    OffloadAction::DeviceDependences DDeps;
+    for (const CIROffloadDep &Dep : ArrayRef(Deps).drop_front())
+      DDeps.add(*Split, *Dep.TC, Dep.Arch, Dep.Kind);
+
+    OffloadAction::HostDependence HDep(
+        *Split, *C.getSingleOffloadToolChain<Action::OFK_Host>(),
+        /*BoundArch=*/BoundArch(), DDeps);
+    return C.MakeAction<OffloadAction>(HDep, DDeps);
+  }
+
   bool UsesLLVMOffloading = Args.hasArg(
       options::OPT_foffload_via_llvm, options::OPT_fno_offload_via_llvm, false);
 
@@ -4480,6 +4705,8 @@ Action *Driver::ConstructPhaseAction(
     if (Args.hasArg(options::OPT_emit_ast))
       return C.MakeAction<CompileJobAction>(Input, types::TY_AST);
     if (Args.hasArg(options::OPT_emit_cir))
+      return C.MakeAction<CompileJobAction>(Input, types::TY_CIR);
+    if (isCIROffloadMerge(C, Args))
       return C.MakeAction<CompileJobAction>(Input, types::TY_CIR);
     if (Args.hasArg(options::OPT_module_file_info))
       return C.MakeAction<CompileJobAction>(Input, types::TY_ModuleFile);
@@ -5384,15 +5611,33 @@ InputInfoList Driver::BuildJobsForActionNoCache(
 
   // Only use pipes when there is exactly one input.
   InputInfoList InputInfos;
-  for (const Action *Input : Inputs) {
-    // Treat dsymutil and verify sub-jobs as being at the top-level too, they
-    // shouldn't get temporary output names.
-    // FIXME: Clean this up.
-    bool SubJobAtTopLevel =
-        AtTopLevel && (isa<DsymutilJobAction>(A) || isa<VerifyJobAction>(A));
-    InputInfos.append(BuildJobsForAction(
-        C, Input, TC, BA, SubJobAtTopLevel, MultipleArchs, LinkingOutput,
-        CachedResults, A->getOffloadingDeviceKind()));
+  if (const auto *MA = dyn_cast<CIRMergeJobAction>(JA)) {
+    auto DepInfo = MA->getDependentActionsInfo();
+    assert(Inputs.size() == DepInfo.size() &&
+           "Expected one target for each CIR merge input");
+    for (unsigned I = 0; I < Inputs.size(); ++I) {
+      const auto &Dep = DepInfo[I];
+      Action::OffloadKind BuildKind =
+          Dep.DependentOffloadKind == Action::OFK_Host
+              ? Action::OFK_None
+              : Dep.DependentOffloadKind;
+      InputInfos.append(BuildJobsForAction(
+          C, Inputs[I], Dep.DependentToolChain, Dep.DependentBoundArch,
+          /*AtTopLevel=*/false,
+          /*MultipleArchs=*/!Dep.DependentBoundArch.empty(),
+          LinkingOutput, CachedResults, BuildKind));
+    }
+  } else {
+    for (const Action *Input : Inputs) {
+      // Treat dsymutil and verify sub-jobs as being at the top-level too, they
+      // shouldn't get temporary output names.
+      // FIXME: Clean this up.
+      bool SubJobAtTopLevel =
+          AtTopLevel && (isa<DsymutilJobAction>(A) || isa<VerifyJobAction>(A));
+      InputInfos.append(BuildJobsForAction(
+          C, Input, TC, BA, SubJobAtTopLevel, MultipleArchs, LinkingOutput,
+          CachedResults, A->getOffloadingDeviceKind()));
+    }
   }
 
   // Always use the first file input as the base input.
@@ -5431,7 +5676,45 @@ InputInfoList Driver::BuildJobsForActionNoCache(
 
   // Determine the place to write output to, if any.
   InputInfo Result;
-  if (JA->getType() == types::TY_Nothing)
+  InputInfoList SplitResults;
+  if (auto *SA = dyn_cast<CIRSplitJobAction>(JA)) {
+    // The split tool writes one output per target. Cache each result by its
+    // target so the consuming OffloadAction can pick the right one, and keep
+    // the list to hand the tool the full output set.
+    for (auto &UI : SA->getDependentActionsInfo()) {
+      assert(UI.DependentOffloadKind != Action::OFK_None &&
+             "CIR split with no offloading??");
+
+      std::string OffloadingPrefix = Action::GetOffloadingFileNamePrefix(
+          UI.DependentOffloadKind,
+          UI.DependentToolChain->getTriple().normalize(),
+          /*CreatePrefixForHost=*/true);
+      auto CurI = InputInfo(
+          SA,
+          GetNamedOutputPath(C, *SA, BaseInput, UI.DependentBoundArch,
+                             /*AtTopLevel=*/false,
+                             MultipleArchs ||
+                                 UI.DependentOffloadKind == Action::OFK_HIP,
+                             OffloadingPrefix),
+          BaseInput);
+      SplitResults.push_back(CurI);
+
+      Action::OffloadKind CacheKind =
+          UI.DependentOffloadKind == Action::OFK_Host
+              ? Action::OFK_None
+              : UI.DependentOffloadKind;
+      CachedResults[{A, GetTriplePlusArchString(UI.DependentToolChain,
+                                                UI.DependentBoundArch,
+                                                CacheKind)}] = {
+          CurI};
+    }
+
+    std::pair<const Action *, std::string> ActionTC = {
+        A, GetTriplePlusArchString(TC, BA, TargetDeviceOffloadKind)};
+    assert(CachedResults.find(ActionTC) != CachedResults.end() &&
+           "Result does not exist??");
+    Result = CachedResults[ActionTC].front();
+  } else if (JA->getType() == types::TY_Nothing)
     Result = {InputInfo(A, BaseInput)};
   else {
     // We only have to generate a prefix for the host if this is not a top-level
@@ -5449,17 +5732,43 @@ InputInfoList Driver::BuildJobsForActionNoCache(
       handleTimeTrace(C, Args, JA, BaseInput, Result);
   }
 
+  // The CIR offload-merge split feeds device modules back through -x cir
+  // without re-tagging the resulting backend actions, so their device offload
+  // kind is unset by the time the tool builds the cc1 command below. Stamp it
+  // here so the device tool chain (e.g. NVPTX) sees a valid offload kind.
+  if (isCIROffloadMerge(C, C.getArgs()) &&
+      TargetDeviceOffloadKind != Action::OFK_None &&
+      TargetDeviceOffloadKind != Action::OFK_Host &&
+      JA->getOffloadingDeviceKind() == Action::OFK_None)
+    const_cast<JobAction *>(JA)->propagateDeviceOffloadInfo(
+        TargetDeviceOffloadKind, BA, TC);
+
   if (CCCPrintBindings && !CCGenDiagnostics) {
     llvm::errs() << "# \"" << T->getToolChain().getEffectiveTriple().str()
-                 << '"' << " - \"" << T->getName() << "\", inputs: [";
+                 << "\" - \"" << T->getName() << "\", inputs: [";
     for (unsigned i = 0, e = InputInfos.size(); i != e; ++i) {
       llvm::errs() << InputInfos[i].getAsString();
       if (i + 1 != e)
         llvm::errs() << ", ";
     }
-    llvm::errs() << "], output: " << Result.getAsString() << "\n";
+    if (SplitResults.empty())
+      llvm::errs() << "], output: " << Result.getAsString() << "\n";
+    else {
+      llvm::errs() << "], outputs: [";
+      for (unsigned i = 0, e = SplitResults.size(); i != e; ++i) {
+        llvm::errs() << SplitResults[i].getAsString();
+        if (i + 1 != e)
+          llvm::errs() << ", ";
+      }
+      llvm::errs() << "] \n";
+    }
   } else {
-    T->ConstructJob(C, *JA, Result, InputInfos, Args, LinkingOutput);
+    if (SplitResults.empty())
+      T->ConstructJob(C, *JA, Result, InputInfos, Args, LinkingOutput);
+    else
+      static_cast<const tools::CIROffloadMerge *>(T)
+          ->ConstructJobMultipleOutputs(C, *JA, SplitResults, InputInfos, Args,
+                                        LinkingOutput);
   }
   return {Result};
 }
