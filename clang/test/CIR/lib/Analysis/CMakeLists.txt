@@ -1,9 +1,11 @@
 add_clang_library(CIRTestAnalysis
   TestCIRAliasAnalysis.cpp
+  TestKernelBindings.cpp
 
   LINK_LIBS PUBLIC
   MLIRCIRAnalysis
   MLIRCIR
+  MLIRCIROffloadOpt
   MLIRIR
   MLIRAnalysis
   MLIRPass
