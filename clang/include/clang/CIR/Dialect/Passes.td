@@ -393,4 +393,32 @@ def OffloadLaunchBoundsPropagation
   let dependentDialects = ["cir::CIRDialect"];
 }
 
+def OffloadLaunchNoalias
+    : Pass<"cir-offload-launch-noalias", "cir::OffloadContainerOp"> {
+  let summary = "Stamp launch-derived noalias on kernel pointer parameters";
+  let description = [{
+    Runs over a `cir.offload.container`. For every device kernel, proves from
+    all of its visible host launches that each pointer parameter points into a
+    distinct `cudaMalloc` allocation and that no address-taken global, loaded
+    pointer, forwarded value, escape, or in-kernel allocation can reach the
+    parameter. When every launch and body path agrees, `noalias` is attached in
+    place to the existing kernel parameters.
+
+    The proof is kernel-wide and conservative: a repeated allocation root, an
+    unprovable argument, or an unprovable body path drops every launch-derived
+    annotation for that kernel. No clones are created and no diagnostics are
+    emitted.
+  }];
+  let constructor = "mlir::createOffloadLaunchNoaliasPass()";
+  let dependentDialects = ["cir::CIRDialect"];
+  let statistics = [
+    Statistic<"numKernelsAnnotated", "num-kernels-annotated",
+              "Number of device kernels stamped with at least one llvm.noalias">,
+    Statistic<"numParamsAnnotated", "num-params-annotated",
+              "Number of kernel pointer parameters that received llvm.noalias">,
+    Statistic<"numKernelsSkipped", "num-kernels-skipped",
+              "Number of kernels that received no launch-derived fact">,
+  ];
+}
+
 #endif // CLANG_CIR_DIALECT_PASSES_TD

@@ -67,6 +67,10 @@ llvm::cl::opt<bool> DisableCirPropKernelArgs(
     "disable-cir-prop-kernel-args",
     llvm::cl::desc("Disable constant kernel-argument propagation"),
     llvm::cl::cat(CIROffloadMergeCategory));
+llvm::cl::opt<bool> NoLaunchNoalias(
+    "no-launch-noalias",
+    llvm::cl::desc("Skip the launch-derived noalias pass (perf A/B)"),
+    llvm::cl::cat(CIROffloadMergeCategory));
 
 llvm::cl::list<std::string>
     InputFileNames("input",
@@ -341,6 +345,13 @@ int runOffloadOptPasses(mlir::ModuleOp module) {
     containerPM.addPass(mlir::createOffloadKernelArgConstantPropagationPass());
   if (!DisableCirInferLaunchBounds)
     containerPM.addPass(mlir::createOffloadLaunchBoundsPropagationPass());
+
+  // Launch-derived noalias runs last: it observes the post-specialization IR
+  // and only annotates kernels that survive dead-kernel elimination. The
+  // driver forwards -fno-clangir-offload-merge-launch-noalias as
+  // -no-launch-noalias for A/B perf experiments.
+  if (!NoLaunchNoalias)
+    containerPM.addPass(mlir::createOffloadLaunchNoaliasPass());
 
   if (mlir::failed(pm.run(module)))
     return reportError("offload-container passes failed");

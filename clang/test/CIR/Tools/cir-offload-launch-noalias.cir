@@ -1,0 +1,47 @@
+// RUN: rm -rf %t && split-file %s %t
+
+// RUN: cir-offload-merge -combine \
+// RUN:   -input=%t/host.cir \
+// RUN:   -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 \
+// RUN:   -output=%t/combined.cir 2>%t.err
+// RUN: FileCheck %s --check-prefix=COMBINED --input-file=%t/combined.cir
+// RUN: FileCheck %s --allow-empty --check-prefix=NOERR --input-file=%t.err
+// NOERR-NOT: {{.}}
+// RUN: cir-opt %t/combined.cir --verify-roundtrip -o /dev/null
+
+// The launch-noalias pass is scheduled last in the container pipeline, so a
+// checked cudaMalloc staging slot is recognized here and the device kernel's
+// pointer parameter is annotated in place.
+// COMBINED-LABEL: cir.func @k(
+// COMBINED-SAME: !cir.ptr<!cir.float> {llvm.noalias}
+// COMBINED: cc(ptx_kernel)
+
+//--- host.cir
+module @old_host attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!cir.void>>, !cir.int<u, 64>) -> !cir.int<s, 32>
+  cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+    cir.return
+  }
+  cir.func @launch() {
+    %slot = cir.alloca "p" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+    %cast = cir.cast bitcast %slot : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!cir.void>>
+    %size = cir.const #cir.int<16> : !cir.int<u, 64>
+    %err = cir.call @cudaMalloc(%cast, %size) : (!cir.ptr<!cir.ptr<!cir.void>>, !cir.int<u, 64>) -> !cir.int<s, 32>
+    %zero = cir.const #cir.int<0> : !cir.int<s, 32>
+    %bad = cir.cmp ne %err, %zero : !cir.int<s, 32>
+    cir.if %bad {
+      cir.return
+    }
+    %p = cir.load %slot : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+    cir.call @stub(%p) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>) -> ()
+    cir.return
+  }
+}
+
+//--- device.cir
+module @old_device attributes {cir.triple = "nvptx64-nvidia-cuda"} {
+  cir.func @k(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+    cir.return
+  }
+}
