@@ -86,6 +86,56 @@ static bool constructsRecord(cir::CallOp call, mlir::Type recordType) {
   return ctor && ctor.getType() == recordType;
 }
 
+// Recover the dim3 written to `slot` field by field, the shape a dim3 leaves
+// behind once its constructor has been inlined:
+//
+//   %fx = cir.get_member %t[0] {name = "x"} : !cir.ptr<!rec_dim3> -> !cir.ptr<!u32i>
+//   cir.store align(4) %x, %fx
+//   … indices 1 ("y") and 2 ("z")
+//   %d = cir.load %t
+//
+// Same discipline as the constructor path: one store per field, in the load's
+// block and before it. A repeated write leaves the value undecided, so report
+// no geometry rather than a guess.
+static cir::LaunchSite::Dim3 traceInlinedDim3(mlir::Value slot,
+                                              cir::LoadOp load) {
+  auto slotType = mlir::dyn_cast<cir::PointerType>(slot.getType());
+  auto record =
+      slotType ? mlir::dyn_cast<cir::RecordType>(slotType.getPointee())
+               : cir::RecordType{};
+  if (!record || record.getName().getValue() != "dim3")
+    return {};
+
+  mlir::Value fields[3];
+  for (mlir::Operation *user : slot.getUsers()) {
+    auto member = mlir::dyn_cast<cir::GetMemberOp>(user);
+    if (!member || member.getAddr() != slot || member.getIndex() > 2)
+      continue;
+
+    cir::StoreOp store;
+    for (mlir::Operation *memberUser : member.getResult().getUsers()) {
+      auto candidate = mlir::dyn_cast<cir::StoreOp>(memberUser);
+      if (!candidate || candidate.getAddr() != member.getResult())
+        continue;
+      // Users are unordered: a second store means the value is undecided.
+      if (store)
+        return {};
+      store = candidate;
+    }
+    if (!store || store->getBlock() != load->getBlock() ||
+        !store->isBeforeInBlock(load))
+      return {};
+    // Two members carrying the same index leave the field undecided as well.
+    if (fields[member.getIndex()])
+      return {};
+    fields[member.getIndex()] = store.getValue();
+  }
+
+  if (!fields[0] || !fields[1] || !fields[2])
+    return {};
+  return {fields[0], fields[1], fields[2]};
+}
+
 // Recover a dim3's components by walking its loaded value back to the stack
 // slot filled by its constructor:
 //
@@ -94,7 +144,8 @@ static bool constructsRecord(cir::CallOp call, mlir::Type recordType) {
 //   %d = cir.load %t
 //
 // Looking through the slot ties the constructor operands to the exact dim3
-// value used by this launch.
+// value used by this launch. Once the constructor is inlined away the slot is
+// written field by field instead, which traceInlinedDim3 recovers.
 static cir::LaunchSite::Dim3 traceDim3(mlir::Value dim) {
   if (!dim)
     return {};
@@ -117,8 +168,9 @@ static cir::LaunchSite::Dim3 traceDim3(mlir::Value dim) {
       return {};
     ctor = call;
   }
-  if (!ctor || ctor->getBlock() != load->getBlock() ||
-      !ctor->isBeforeInBlock(load))
+  if (!ctor)
+    return traceInlinedDim3(slot, load);
+  if (ctor->getBlock() != load->getBlock() || !ctor->isBeforeInBlock(load))
     return {};
 
   mlir::OperandRange args = ctor.getArgOperands();
