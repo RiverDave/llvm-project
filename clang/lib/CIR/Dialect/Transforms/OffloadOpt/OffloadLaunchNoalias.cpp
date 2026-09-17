@@ -156,12 +156,6 @@ static bool slotHoldsDerivedPointer(Value slot, cir::FuncOp kernel) {
   return false;
 }
 
-// The universality obligations from the v1 drop-table that are visible in the
-// kernel body: address-taken globals, pointers loaded from memory, pointers
-// forwarded to any callee, escaped pointer values (including pointer-to-integer
-// laundering), and in-kernel allocation all drop the fact. Rounding kernel
-// parameters through their entry-block slots is not an escape: such values
-// stay on the stack, and the obligations above still observe any real use.
 static bool bodyAllowsNoalias(cir::FuncOp kernel) {
   if (kernel.isDeclaration() || kernel.getBody().empty())
     return false;
@@ -236,6 +230,7 @@ static bool bodyAllowsNoalias(cir::FuncOp kernel) {
 // PolyBench-style code calls without a cast; CIRGen keeps the call to the
 // instantiation visible (no inlining runs before this pass), so recognize both
 // the plain symbol and its mangled C++ template instantiations.
+//TODO: Implement this for HIP symbols!.
 static bool isCudaMallocSymbol(llvm::StringRef callee) {
   if (callee == "cudaMalloc")
     return true;
@@ -327,7 +322,6 @@ static bool resolveValueToRoot(Value v, SlotRoot &out, unsigned depth) {
   v = cir::getUnderlyingObject(v);
   if (auto load = v.getDefiningOp<cir::LoadOp>())
     return resolveAddressToRoot(load.getAddr(), out, depth + 1);
-  // Block arguments, globals, constants and call results have no v1 root.
   return false;
 }
 
