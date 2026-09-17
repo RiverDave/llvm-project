@@ -4494,9 +4494,15 @@ class CIR_CallOpBase<string mnemonic, list<Trait> extra_traits = []>
     mlir::OperandRange getArgOperands();
     mlir::MutableOperandRange getArgOperandsMutable();
 
-    /// Return the callee of this operation
+    /// Return the callee of this operation. Indirect calls carry their callee
+    /// as the first operand (`callee` is empty); returning a null symbol there
+    /// breaks every CallOpInterface walker — MLIR's dataflow dead-code analysis
+    /// (used by `sccp`) asserts on a null callable.
     mlir::CallInterfaceCallable getCallableForCallee() {
-      return (*this)->getAttrOfType<mlir::SymbolRefAttr>("callee");
+      if (mlir::SymbolRefAttr callee =
+              (*this)->getAttrOfType<mlir::SymbolRefAttr>("callee"))
+        return callee;
+      return getOperand(0);
     }
 
     /// Set the callee for this operation.
