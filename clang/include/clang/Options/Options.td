@@ -3505,12 +3505,12 @@ def fcir_prop_kernel_args : Flag<["-"], "fcir-prop-kernel-args">,
 def fno_cir_prop_kernel_args : Flag<["-"], "fno-cir-prop-kernel-args">,
   Visibility<[ClangOption]>, Group<f_Group>,
   HelpText<"Do not propagate constant kernel arguments in the ClangIR offload merge pipeline">;
-def fclangir_offload_merge_launch_noalias : Flag<["-"], "fclangir-offload-merge-launch-noalias">,
+def fclangir_offload_merge_pointer_facts : Flag<["-"], "fclangir-offload-merge-pointer-facts">,
   Visibility<[ClangOption]>, Group<f_Group>,
-  HelpText<"Run the launch-derived noalias pass in the ClangIR offload-merge pipeline (default).">;
-def fno_clangir_offload_merge_launch_noalias : Flag<["-"], "fno-clangir-offload-merge-launch-noalias">,
+  HelpText<"Run the launch-derived pointer-facts pass in the ClangIR offload-merge pipeline (default).">;
+def fno_clangir_offload_merge_pointer_facts : Flag<["-"], "fno-clangir-offload-merge-pointer-facts">,
   Visibility<[ClangOption]>, Group<f_Group>,
-  HelpText<"Skip the launch-derived noalias pass in the ClangIR offload-merge pipeline (perf A/B).">;
+  HelpText<"Skip the launch-derived pointer-facts pass in the ClangIR offload-merge pipeline (perf A/B).">;
 def emit_cir : Flag<["-"], "emit-cir">, Visibility<[ClangOption, CC1Option]>,
   Group<Action_Group>, HelpText<"Build ASTs and then lower to ClangIR">;
 /// ClangIR-specific options - END

@@ -1,5 +1,5 @@
 // RUN: cir-opt %s -split-input-file \
-// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-pointer-facts))" \
 // RUN:   2>%t.err | FileCheck %s
 // RUN: FileCheck %s --allow-empty --check-prefix=NOERR --input-file=%t.err
 // NOERR-NOT: {{.}}

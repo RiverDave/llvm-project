@@ -1,4 +1,4 @@
-//===- OffloadLaunchNoalias.cpp - Launch-derived noalias on kernel params -===//
+//===- PointerFacts.cpp - Launch-derived pointer facts on kernel params ---===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -32,10 +32,10 @@
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/DebugLog.h"
 
-#define DEBUG_TYPE "cir-offload-launch-noalias"
+#define DEBUG_TYPE "cir-offload-pointer-facts"
 
 namespace mlir {
-#define GEN_PASS_DEF_OFFLOADLAUNCHNOALIAS
+#define GEN_PASS_DEF_OFFLOADPOINTERFACTS
 #include "clang/CIR/Dialect/Passes.h.inc"
 } // namespace mlir
 
@@ -44,7 +44,7 @@ using namespace cir;
 
 namespace {
 
-static constexpr llvm::StringLiteral kRemarkName = "OffloadLaunchNoalias";
+static constexpr llvm::StringLiteral kRemarkName = "OffloadPointerFacts";
 static constexpr llvm::StringLiteral kRemarkCategory = "cir-offload-noalias";
 
 static void remarkSkipped(cir::FuncOp anchor, llvm::StringRef kernelName,
@@ -359,12 +359,12 @@ static bool allocationFreed(cir::CallOp mallocCall, Value slot,
   return freed;
 }
 
-struct OffloadLaunchNoaliasPass
-    : public impl::OffloadLaunchNoaliasBase<OffloadLaunchNoaliasPass> {
+struct OffloadPointerFactsPass
+    : public impl::OffloadPointerFactsBase<OffloadPointerFactsPass> {
   void runOnOperation() override;
 };
 
-void OffloadLaunchNoaliasPass::runOnOperation() {
+void OffloadPointerFactsPass::runOnOperation() {
   cir::KernelBindingTable &table = getAnalysis<cir::KernelBindingTable>();
   cir::CIRBasicAliasAnalysis aliasAnalysis;
   bool changed = false;
@@ -497,8 +497,8 @@ void OffloadLaunchNoaliasPass::runOnOperation() {
         LDBG() << "  '" << kernel.getSymName() << "': stamped " << stamped
                << " pointer parameter(s)";
         remarkStamped(kernel, kernelName, stamped, binding.launchSites.size());
-        ++numKernelsAnnotated;
-        numParamsAnnotated += stamped;
+        ++numKernelsNoalias;
+        numParamsNoalias += stamped;
       }
     }
   }
@@ -509,6 +509,6 @@ void OffloadLaunchNoaliasPass::runOnOperation() {
 
 } // namespace
 
-std::unique_ptr<Pass> mlir::createOffloadLaunchNoaliasPass() {
-  return std::make_unique<OffloadLaunchNoaliasPass>();
+std::unique_ptr<Pass> mlir::createOffloadPointerFactsPass() {
+  return std::make_unique<OffloadPointerFactsPass>();
 }

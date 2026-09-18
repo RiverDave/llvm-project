@@ -393,9 +393,9 @@ def OffloadLaunchBoundsPropagation
   let dependentDialects = ["cir::CIRDialect"];
 }
 
-def OffloadLaunchNoalias
-    : Pass<"cir-offload-launch-noalias", "cir::OffloadContainerOp"> {
-  let summary = "Stamp launch-derived noalias on kernel pointer parameters";
+def OffloadPointerFacts
+    : Pass<"cir-offload-pointer-facts", "cir::OffloadContainerOp"> {
+  let summary = "Stamp launch-derived pointer facts on kernel parameters";
   let description = [{
     Runs over a `cir.offload.container`. For every device kernel, proves from
     all of its visible host launches that each pointer parameter points into a
@@ -406,15 +406,15 @@ def OffloadLaunchNoalias
 
     The proof is kernel-wide and conservative: a repeated allocation root, an
     unprovable argument, or an unprovable body path drops every launch-derived
-    annotation for that kernel. No clones are created and no diagnostics are
-    emitted.
+    fact for that kernel. No clones are created and no diagnostics are
+    emitted. Today the only fact stated is `llvm.noalias`.
   }];
-  let constructor = "mlir::createOffloadLaunchNoaliasPass()";
+  let constructor = "mlir::createOffloadPointerFactsPass()";
   let dependentDialects = ["cir::CIRDialect"];
   let statistics = [
-    Statistic<"numKernelsAnnotated", "num-kernels-annotated",
+    Statistic<"numKernelsNoalias", "num-kernels-noalias",
               "Number of device kernels stamped with at least one llvm.noalias">,
-    Statistic<"numParamsAnnotated", "num-params-annotated",
+    Statistic<"numParamsNoalias", "num-params-noalias",
               "Number of kernel pointer parameters that received llvm.noalias">,
     Statistic<"numKernelsSkipped", "num-kernels-skipped",
               "Number of kernels that received no launch-derived fact">,

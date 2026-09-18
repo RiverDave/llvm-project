@@ -184,7 +184,7 @@ int main(int argc, char **argv) {
   });
 
   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
-    return mlir::createOffloadLaunchNoaliasPass();
+    return mlir::createOffloadPointerFactsPass();
   });
 
   cir::test::registerPrintKernelBindingsPass();

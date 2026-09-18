@@ -1,10 +1,10 @@
 // RUN: cir-opt %s -split-input-file \
-// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-pointer-facts))" \
 // RUN:   | FileCheck %s
 
 // Conservative rejection is silent: no diagnostic on stderr, exit code 0.
 // RUN: cir-opt %s -split-input-file \
-// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-pointer-facts))" \
 // RUN:   -o /dev/null 2> %t.err
 // RUN: FileCheck %s --allow-empty --check-prefix=NOERR --input-file=%t.err
 // NOERR-NOT: {{.}}

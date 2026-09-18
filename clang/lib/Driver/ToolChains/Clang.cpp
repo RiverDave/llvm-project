@@ -9693,8 +9693,8 @@ void CIROffloadMerge::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-disable-cir-infer-launch-bounds");
   addOffloadTargetsArg(TCArgs, CmdArgs, DepInfo);
 
-  if (TCArgs.hasArg(options::OPT_fno_clangir_offload_merge_launch_noalias))
-    CmdArgs.push_back("-no-launch-noalias");
+  if (TCArgs.hasArg(options::OPT_fno_clangir_offload_merge_pointer_facts))
+    CmdArgs.push_back("-no-pointer-facts");
 
   CmdArgs.push_back(
       TCArgs.MakeArgString(Twine("-output=") + Output.getFilename()));
