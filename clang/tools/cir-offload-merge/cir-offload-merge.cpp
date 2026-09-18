@@ -67,6 +67,10 @@ llvm::cl::opt<bool> DisableCirPropKernelArgs(
     "disable-cir-prop-kernel-args",
     llvm::cl::desc("Disable constant kernel-argument propagation"),
     llvm::cl::cat(CIROffloadMergeCategory));
+llvm::cl::opt<bool> NoPointerFacts(
+    "no-pointer-facts",
+    llvm::cl::desc("Skip the launch-derived pointer-facts pass (perf A/B)"),
+    llvm::cl::cat(CIROffloadMergeCategory));
 
 llvm::cl::list<std::string>
     InputFileNames("input",
@@ -341,6 +345,13 @@ int runOffloadOptPasses(mlir::ModuleOp module) {
     containerPM.addPass(mlir::createOffloadKernelArgConstantPropagationPass());
   if (!DisableCirInferLaunchBounds)
     containerPM.addPass(mlir::createOffloadLaunchBoundsPropagationPass());
+
+  // Launch-derived pointer facts run last: it observes the post-specialization IR
+  // and only annotates kernels that survive dead-kernel elimination. The
+  // driver forwards -fno-clangir-offload-merge-pointer-facts as
+  // -no-pointer-facts for A/B perf experiments.
+  if (!NoPointerFacts)
+    containerPM.addPass(mlir::createOffloadPointerFactsPass());
 
   if (mlir::failed(pm.run(module)))
     return reportError("offload-container passes failed");
