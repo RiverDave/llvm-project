@@ -10,7 +10,7 @@
 // NOERR-NOT: {{.}}
 // RUN: cir-opt %t/combined.cir --verify-roundtrip -o /dev/null
 
-// The launch-noalias pass is scheduled last in the container pipeline, so a
+// The pointer-facts pass is scheduled last in the container pipeline, so a
 // checked cudaMalloc staging slot is recognized here and the device kernel's
 // pointer parameter is annotated in place.
 // COMBINED-LABEL: cir.func @k(

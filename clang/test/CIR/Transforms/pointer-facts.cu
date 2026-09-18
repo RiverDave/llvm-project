@@ -1,8 +1,8 @@
 // End-to-end launch-derived noalias: real CIRGen output for host and device
 // TUs, merged into a cir.offload.container. The merge tool runs the
 // offload-container passes by default, so the combined container comes out with
-// llvm.noalias on the device kernel's pointer parameters; -no-launch-noalias
-// (what -fno-clangir-offload-merge-launch-noalias forwards) turns it off.
+// llvm.noalias on the device kernel's pointer parameters; -no-pointer-facts
+// (what -fno-clangir-offload-merge-pointer-facts forwards) turns it off.
 
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -aux-triple nvptx64-nvidia-cuda \
 // RUN:   -target-sdk-version=9.2 -x cuda -I %S/../CodeGenCUDA/Inputs \
@@ -14,7 +14,7 @@
 // RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 \
 // RUN:   -output=%t-enabled.cir
 // RUN: FileCheck %s --check-prefix=ENABLED --input-file=%t-enabled.cir
-// RUN: cir-offload-merge -combine -no-launch-noalias \
+// RUN: cir-offload-merge -combine -no-pointer-facts \
 // RUN:   -input=%t-host.cir -input=%t-device.cir \
 // RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 \
 // RUN:   -output=%t-disabled.cir

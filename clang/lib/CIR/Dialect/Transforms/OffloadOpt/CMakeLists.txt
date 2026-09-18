@@ -4,7 +4,7 @@ add_clang_library(MLIRCIROffloadOpt
   DeadKernelElimination.cpp
   KernelArgConstantPropagation.cpp
   LaunchBoundsPropagation.cpp
-  OffloadLaunchNoalias.cpp
+  PointerFacts.cpp
 
   DEPENDS
   MLIRCIROpsIncGen

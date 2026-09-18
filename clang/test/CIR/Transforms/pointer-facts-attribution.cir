@@ -1,15 +1,15 @@
 // RUN: cir-opt %s \
-// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-pointer-facts))" \
 // RUN:   -mlir-pass-statistics -o /dev/null 2>&1 \
 // RUN:   | FileCheck --check-prefix=STATS %s
 
 // RUN: cir-opt %s \
-// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-pointer-facts))" \
 // RUN:   --remarks-filter=".*" -o /dev/null 2>&1 \
 // RUN:   | FileCheck --check-prefix=REMARK %s
 
 // RUN: cir-opt %s \
-// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-launch-noalias))" \
+// RUN:   -pass-pipeline="builtin.module(cir.offload.container(cir-offload-pointer-facts))" \
 // RUN:   | FileCheck --check-prefix=IR %s
 
 !s32i = !cir.int<s, 32>
@@ -103,16 +103,16 @@ module {
 
 // Unchecked allocations count: two kernels stamped (one pointer parameter
 // each), two skipped.
-// STATS: OffloadLaunchNoalias
-// STATS-DAG: 2 num-kernels-annotated
-// STATS-DAG: 2 num-params-annotated
+// STATS: OffloadPointerFacts
+// STATS-DAG: 2 num-kernels-noalias
+// STATS-DAG: 2 num-params-noalias
 // STATS-DAG: 2 num-kernels-skipped
 
 // Each rejection reason is distinguishable in the remark stream.
-// REMARK-DAG: remark: [Passed] OffloadLaunchNoalias | Category:cir-offload-noalias | Function=kern_ok | {{.*}}launchSites=1, pointerParams=1
-// REMARK-DAG: remark: [Missed] OffloadLaunchNoalias | Category:cir-offload-noalias | Function=kern_external | {{.*}}Reason="launch sites not all visible"
-// REMARK-DAG: remark: [Missed] OffloadLaunchNoalias | Category:cir-offload-noalias | Function=kern_nolaunch | {{.*}}Reason="no launch site in this translation unit"
-// REMARK-DAG: remark: [Passed] OffloadLaunchNoalias | Category:cir-offload-noalias | Function=kern_unchecked | {{.*}}launchSites=1, pointerParams=1
+// REMARK-DAG: remark: [Passed] OffloadPointerFacts | Category:cir-offload-noalias | Function=kern_ok | {{.*}}launchSites=1, pointerParams=1
+// REMARK-DAG: remark: [Missed] OffloadPointerFacts | Category:cir-offload-noalias | Function=kern_external | {{.*}}Reason="launch sites not all visible"
+// REMARK-DAG: remark: [Missed] OffloadPointerFacts | Category:cir-offload-noalias | Function=kern_nolaunch | {{.*}}Reason="no launch site in this translation unit"
+// REMARK-DAG: remark: [Passed] OffloadPointerFacts | Category:cir-offload-noalias | Function=kern_unchecked | {{.*}}launchSites=1, pointerParams=1
 
 // The two proven kernels carry the attribute; the skipped signatures match
 // without one.
