@@ -119,20 +119,6 @@ mlir::ModuleOp getOffloadContainerHostModule(mlir::ModuleOp container);
 /// `cir.offload.container` unit attribute.
 llvm::SmallVector<mlir::ModuleOp>
 getOffloadContainerDeviceModules(mlir::ModuleOp container);
-
-/// Active constrained-FP and fast-math state for a `CIRBaseBuilderTy`.
-/// Both are null when `builder` did not register any.
-///
-/// ODS builders only receive `mlir::OpBuilder &`, so floating-point ops call
-/// these instead of taking the attributes at every create site.
-FenvAttr fenvForBuilder(mlir::OpBuilder &builder);
-FastMathFlagsAttr fastMathForBuilder(mlir::OpBuilder &builder);
-
-void registerCIRBuilderFPDefaults(mlir::OpBuilder *builder,
-                                  FenvAttr (*fenv)(void *),
-                                  FastMathFlagsAttr (*fastMath)(void *),
-                                  void *self);
-void unregisterCIRBuilderFPDefaults(mlir::OpBuilder *builder);
 } // namespace cir
 
 // TableGen'erated files for MLIR dialects require that a macro be defined when
