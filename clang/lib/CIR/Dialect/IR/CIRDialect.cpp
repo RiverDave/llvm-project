@@ -3895,6 +3895,9 @@ LogicalResult cir::CmpOp::verify() {
   if (getFenvAttr() && !cir::isAnyFloatingPointType(getLhs().getType()))
     return emitOpError()
            << "'fenv' is only valid for floating-point comparisons";
+  if (getFastmathAttr() && !cir::isAnyFloatingPointType(getLhs().getType()))
+    return emitOpError()
+           << "'fastmath' is only valid for floating-point comparisons";
   return success();
 }
 
@@ -3906,6 +3909,9 @@ LogicalResult cir::VecCmpOp::verify() {
   if (getFenvAttr() && !cir::isFPOrVectorOfFPType(getLhs().getType()))
     return emitOpError()
            << "'fenv' is only valid for floating-point comparisons";
+  if (getFastmathAttr() && !cir::isFPOrVectorOfFPType(getLhs().getType()))
+    return emitOpError()
+           << "'fastmath' is only valid for floating-point comparisons";
   return success();
 }
 
