@@ -206,19 +206,15 @@ mlir::ModuleOp cir::getOffloadContainerHostModule(mlir::ModuleOp container) {
   return mlir::cast<mlir::ModuleOp>(container.getBody()->front());
 }
 
-llvm::iterator_range<mlir::Block::op_iterator<mlir::ModuleOp>>
+llvm::SmallVector<mlir::ModuleOp>
 cir::getOffloadContainerDeviceModules(mlir::ModuleOp container) {
   assert(cir::isOffloadContainer(container) &&
          "expected a module carrying the 'cir.offload.container' unit "
          "attribute");
-  mlir::Block &body = *container.getBody();
-  auto begin = body.op_begin<mlir::ModuleOp>();
-  auto end = body.op_end<mlir::ModuleOp>();
   // We represent device modules in the range of ops[1..n-1]
   // where all elements beside ops[0] are device modules.
-  if (begin != end)
-    ++begin;
-  return {begin, end};
+  return llvm::to_vector(
+      llvm::drop_begin((*container.getBody()).getOps<mlir::ModuleOp>()));
 }
 
 static LogicalResult verifyOffloadKind(mlir::ModuleOp module,
