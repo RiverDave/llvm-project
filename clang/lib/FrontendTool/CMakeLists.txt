@@ -26,6 +26,9 @@ if(CLANG_ENABLE_CIR)
   list(APPEND link_libs
     clangCIRFrontendAction
     MLIRCIRTransforms
+    # Provides the offload passes registered in clang/CIR/Dialect/Passes.td,
+    # which clangFrontendTool references via GEN_PASS_REGISTRATION.
+    MLIRCIROffloadOpt
     MLIRIR
     MLIRPass
     )
