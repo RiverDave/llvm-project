@@ -33,7 +33,7 @@
 // cubin -> CUDA fatbinary.
 // MERGE: "{{.*}}fatbinary{{(\.exe)?}}"{{.*}} "--create" "[[DEV_FATBIN:[^"]+\.fatbin]]"{{.*}} "--image3=kind=elf,sm=80,file=[[DEV_CUBIN]]"
 // Host module: CIR -> object, embedding the device fatbinary.
-// MERGE: "-cc1"{{.*}} "-emit-obj"{{.*}} "-fcuda-include-gpubinary" "[[DEV_FATBIN]]"{{.*}} "-x" "cir" "[[HOST_SPLIT]]"
+// MERGE: "-cc1"{{.*}} "-emit-obj"{{.*}} "-foffload-include-binary" "[[DEV_FATBIN]]"{{.*}} "-x" "cir" "[[HOST_SPLIT]]"
 
 // RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
 // RUN:   --cuda-gpu-arch=sm_60 --cuda-gpu-arch=sm_70 --cuda-gpu-arch=sm_80 \
@@ -51,7 +51,7 @@
 // MULTI: "-cc1"{{.*}} "-target-cpu" "sm_90"{{.*}} "-o" "[[MULTI_DEV90_PTX:[^"]+\.s]]"{{.*}} "-x" "cir" "[[MULTI_DEV90_SPLIT]]"
 // MULTI: "{{.*}}ptxas{{(\.exe)?}}"{{.*}} "--gpu-name" "sm_90" "--output-file" "[[MULTI_DEV90_CUBIN:[^"]+\.o]]" "[[MULTI_DEV90_PTX]]"
 // MULTI: "{{.*}}fatbinary{{(\.exe)?}}"{{.*}} "--create" "[[MULTI_FATBIN:[^"]+\.fatbin]]"{{.*}} "--image3=kind=elf,sm=60,file=[[MULTI_DEV60_CUBIN]]" "--image3=kind=elf,sm=70,file=[[MULTI_DEV70_CUBIN]]" "--image3=kind=elf,sm=80,file=[[MULTI_DEV80_CUBIN]]" "--image3=kind=elf,sm=90,file=[[MULTI_DEV90_CUBIN]]"
-// MULTI: "-cc1"{{.*}} "-emit-obj"{{.*}} "-fcuda-include-gpubinary" "[[MULTI_FATBIN]]"{{.*}} "-x" "cir" "[[MULTI_HOST_SPLIT]]"
+// MULTI: "-cc1"{{.*}} "-emit-obj"{{.*}} "-foffload-include-binary" "[[MULTI_FATBIN]]"{{.*}} "-x" "cir" "[[MULTI_HOST_SPLIT]]"
 
 // Without --clangir-offload-merge the normal pipeline runs: no merge/split.
 // RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
