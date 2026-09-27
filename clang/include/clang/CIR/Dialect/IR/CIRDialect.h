@@ -117,7 +117,7 @@ mlir::ModuleOp getOffloadContainerHostModule(mlir::ModuleOp container);
 /// The device modules held by the offload container `container`, that is every
 /// nested module after the host. Asserts that `container` carries the
 /// `cir.offload.container` unit attribute.
-llvm::iterator_range<mlir::Block::op_iterator<mlir::ModuleOp>>
+llvm::SmallVector<mlir::ModuleOp>
 getOffloadContainerDeviceModules(mlir::ModuleOp container);
 } // namespace cir
 

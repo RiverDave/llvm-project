@@ -304,8 +304,8 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
   // `cir.offload.container` unit attribute and holds the host and device
   // modules directly, host first, matching the container verifier.
   mlir::OwningOpRef<mlir::ModuleOp> combinedModule(mlir::ModuleOp::create(loc));
-  combinedModule->setAttr(cir::CIRDialect::getOffloadContainerAttrName(),
-                          mlir::UnitAttr::get(&context));
+  (*combinedModule)->setAttr(cir::CIRDialect::getOffloadContainerAttrName(),
+                             mlir::UnitAttr::get(&context));
 
   // Preserve the container invariant expected by the verifier: the host module
   // is the first nested op, followed by device modules in input order.
