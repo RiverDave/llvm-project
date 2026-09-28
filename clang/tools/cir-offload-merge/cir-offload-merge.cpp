@@ -359,6 +359,11 @@ int writeModuleToOutput(mlir::ModuleOp module, llvm::StringRef outputFileName) {
 // The single top-level offload container in `cirModule`, or null if there is
 // not exactly one module carrying the `cir.offload.container` unit attribute.
 mlir::ModuleOp findContainer(mlir::ModuleOp cirModule) {
+  // -combine writes the container as the module itself, so check there first;
+  // the nested scan below keeps the hand-written container fixtures working.
+  if (cir::isOffloadContainer(cirModule))
+    return cirModule;
+
   mlir::ModuleOp container;
   for (mlir::ModuleOp candidate : cirModule.getOps<mlir::ModuleOp>()) {
     if (!cir::isOffloadContainer(candidate))
@@ -389,8 +394,9 @@ int splitInput(llvm::StringRef inputFileName,
   clang::OffloadBundlerConfig bundlerConfig;
   llvm::StringSet<> seenBundleIDs;
 
-  for (mlir::ModuleOp nestedModule :
-       cir::getOffloadContainerDeviceModules(container)) {
+  // Host first, then devices: the host is a legitimate split target too, and
+  // getOffloadContainerDeviceModules() deliberately skips it.
+  for (mlir::ModuleOp nestedModule : container.getOps<mlir::ModuleOp>()) {
     auto bundleIDAttr = nestedModule->getAttrOfType<mlir::StringAttr>(
         cir::CIRDialect::getOffloadBundleIDAttrName());
     if (!bundleIDAttr)
