@@ -11,14 +11,16 @@
 // RUN: cir-offload-merge -combine -input=%t-host.cir -input=%t-dev.cir \
 // RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 \
 // RUN:   -output=%t-combined.cir
-// RUN: FileCheck %s --input-file=%t-combined.cir \
-// RUN:   --implicit-check-not="dead_static" --implicit-check-not="dead_anon"
+// RUN: FileCheck %s --input-file=%t-combined.cir
+// RUN: FileCheck %s --check-prefix=DEAD --input-file=%t-combined.cir
 
 // A launched kernel and an externally-linked kernel (which another TU may launch
 // through its external host stub) survive; the static and anonymous-namespace
 // kernels that are never launched here are removed device-side.
 // CHECK-DAG: cir.func{{.*}} @_Z4livev() cc(ptx_kernel)
 // CHECK-DAG: cir.func{{.*}} @_Z10ext_unusedv() cc(ptx_kernel)
+// DEAD-NOT: dead_static
+// DEAD-NOT: dead_anon
 
 #include "cuda.h"
 

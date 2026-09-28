@@ -78,6 +78,15 @@ llvm::cl::list<std::string>
                                    "multiple times in split mode."),
                     llvm::cl::cat(CIROffloadMergeCategory));
 
+llvm::cl::opt<bool> DisableCirInferLaunchBounds(
+    "disable-cir-infer-launch-bounds",
+    llvm::cl::desc("Disable launch-bound inference from host launch sites"),
+    llvm::cl::cat(CIROffloadMergeCategory));
+llvm::cl::opt<bool> DisableCirPropKernelArgs(
+    "disable-cir-prop-kernel-args",
+    llvm::cl::desc("Disable constant kernel-argument propagation"),
+    llvm::cl::cat(CIROffloadMergeCategory));
+
 struct InputTarget {
   std::string Input;
   std::string Target;
@@ -333,7 +342,13 @@ int runOffloadOptPasses(mlir::ModuleOp module) {
   modulePM.addPass(mlir::createMem2Reg());
   modulePM.addPass(mlir::createSCCPPass());
 
-  modulePM.addPass(mlir::createOffloadDeadKernelEliminationPass());
+  // Container passes run on the container itself; the nested modules carry no
+  // container attribute and would make them early-return.
+  pm.addPass(mlir::createOffloadDeadKernelEliminationPass());
+  if (!DisableCirPropKernelArgs)
+    pm.addPass(mlir::createOffloadKernelArgConstantPropagationPass());
+  if (!DisableCirInferLaunchBounds)
+    pm.addPass(mlir::createOffloadLaunchBoundsPropagationPass());
 
   if (mlir::failed(pm.run(module)))
     return reportError("offload-container passes failed");
