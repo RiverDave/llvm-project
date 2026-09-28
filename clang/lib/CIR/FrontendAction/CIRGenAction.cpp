@@ -126,6 +126,36 @@ parseCIRInput(CompilerInstance &CI, mlir::MLIRContext &context,
   return module;
 }
 
+// CIRGen attaches the device binary while compiling device code
+// (CIRGenCUDANV's recordDeviceBinary). A resumed .cir input never runs CIRGen,
+// so re-attach it from the file the driver passed; LoweringPrepare registers
+// whatever binary the module carries.
+static void attachDeviceBinaryFromFile(mlir::ModuleOp module,
+                                       CompilerInstance &CI,
+                                       CodeGenOptions &CGO) {
+  if (CGO.OffloadBinaryToEmbedFile.empty() ||
+      module->getAttr(cir::CIRDialect::getCUDADeviceBinaryAttrName()))
+    return;
+
+  auto binaryOrErr =
+      CI.getVirtualFileSystem().getBufferForFile(CGO.OffloadBinaryToEmbedFile);
+  if (std::error_code ec = binaryOrErr.getError()) {
+    reportError(CI, llvm::Twine("cannot read device binary '") +
+                        CGO.OffloadBinaryToEmbedFile + "': " + ec.message());
+    return;
+  }
+
+  // Typed as the fatbin global's array type, matching recordDeviceBinary:
+  // LoweringPrepare uses this attribute as the initializer as-is.
+  llvm::StringRef bytes = binaryOrErr.get()->getBuffer();
+  mlir::MLIRContext &ctx = *module.getContext();
+  auto charTy = cir::IntType::get(&ctx, CI.getTarget().getCharWidth(),
+                                  /*isSigned=*/false);
+  auto binaryTy = cir::ArrayType::get(charTy, bytes.size());
+  module->setAttr(cir::CIRDialect::getCUDADeviceBinaryAttrName(),
+                  mlir::StringAttr::get(bytes, binaryTy));
+}
+
 static bool linkInModules(CompilerInstance &CI, CodeGenOptions &CGO,
                           llvm::Module &M,
                           SmallVectorImpl<::clang::LinkModule> &LinkModules) {
@@ -448,6 +478,8 @@ void CIRGenAction::ExecuteAction() {
   MLIRMod = parseCIRInput(CI, *MLIRCtx, *MainFile);
   if (!MLIRMod)
     return;
+
+  attachDeviceBinaryFromFile(*MLIRMod, CI, CI.getCodeGenOpts());
 
   if (Action == OutputType::EmitCIR) {
     mlir::OpPrintingFlags Flags;
