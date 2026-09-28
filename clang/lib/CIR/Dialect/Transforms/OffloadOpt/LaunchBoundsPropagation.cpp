@@ -85,7 +85,7 @@ static bool setLaunchBound(cir::FuncOp kernel, uint64_t bound,
     return true;
   }
   default:
-    llvm_unreachable("launch-bound propagation is only implemented for NVPTX");
+    return false;
   }
 }
 
