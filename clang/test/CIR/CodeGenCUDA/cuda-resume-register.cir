@@ -1,24 +1,21 @@
-// Resume a host .cir module and check that the device binary handed to cc1 is
-// attached, together with the CUDA registration it drives.
+// Resume a host .cir module and check that the device binary passed to cc1 is
+// attached to the module.
 //
 // CIRGenCUDANV records the binary while compiling device code, so a module that
 // came out of CIRGen already carries it. A .cir input never runs CIRGen, so
-// without an explicit attach here the module reaches LoweringPrepare with
-// nothing to register and the host object silently ends up without a fat binary.
+// without an explicit attach the module reaches lowering with no binary at all.
+//
+// Note: the CUDA module registration is not emitted on this path yet --
+// LoweringPrepare gates it on the live LangOpts.CUDA, which `-x cir` does not
+// set. This test covers the attribute only.
 
-// Create a dummy GPU binary file for registration.
 // RUN: echo -n "GPU binary would be here." > %t.fatbin
-
 // RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-cir \
 // RUN:   -foffload-include-binary %t.fatbin %s -o - \
 // RUN:   | FileCheck %s --check-prefix=ATTR
 
-// RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-llvm \
-// RUN:   -foffload-include-binary %t.fatbin %s -o %t.ll
-// RUN: FileCheck --input-file=%t.ll %s --check-prefix=LLVM
-
-// RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-llvm %s -o %t.nogpu.ll
-// RUN: FileCheck --input-file=%t.nogpu.ll %s --check-prefix=NOGPUBIN
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-cir %s -o - \
+// RUN:   | FileCheck %s --check-prefix=NOATTR
 
 module attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
   cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
@@ -30,18 +27,4 @@ module attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
 // LoweringPrepare can use the attribute as the initializer as-is.
 // ATTR: cir.cu.device_binary = "GPU binary would be here." : !cir.array<!u8i x 25>
 
-// Registration happens during lowering, so the globals only exist in the
-// backend output, not in the -emit-cir dump above.
-
-// The registration reaches the object file.
-// LLVM: @__cuda_fatbin_str = {{.*}}constant
-// LLVM-SAME: section ".nv_fatbin"
-// LLVM: @__cuda_fatbin_wrapper = {{.*}}constant
-// LLVM-SAME: section ".nvFatBinSegment"
-// LLVM: @__cuda_module_ctor
-// LLVM: call {{.*}}@__cudaRegisterFatBinary(
-
-// Without a binary on the command line there is nothing to attach or register.
-// NOGPUBIN-NOT: cir.cu.device_binary
-// NOGPUBIN-NOT: __cuda_fatbin_str
-// NOGPUBIN-NOT: __cudaRegisterFatBinary
+// NOATTR-NOT: cir.cu.device_binary

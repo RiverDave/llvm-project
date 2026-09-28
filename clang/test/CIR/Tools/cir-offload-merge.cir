@@ -117,15 +117,15 @@
 // ERR-SPLIT-DUP-OUTPUT: error: duplicate output
 
 // RUN: not cir-offload-merge -split -input=%t/host.cir -targets=host-x86_64-unknown-linux-gnu -output=%t/out.cir 2>&1 | FileCheck %s --check-prefix=ERR-SPLIT-NO-CONTAINER
-// ERR-SPLIT-NO-CONTAINER: error: expected exactly one direct top-level cir.offload.container
+// ERR-SPLIT-NO-CONTAINER: error: expected exactly one direct top-level offload container
 
 // RUN: not cir-offload-merge -split -input=%t/multi-container.cir -targets=host-x86_64-unknown-linux-gnu -output=%t/out.cir 2>&1 | FileCheck %s --check-prefix=ERR-SPLIT-MULTI-CONTAINER
-// ERR-SPLIT-MULTI-CONTAINER: error: expected exactly one direct top-level cir.offload.container
+// ERR-SPLIT-MULTI-CONTAINER: error: expected exactly one direct top-level offload container
 
 // RUN: not cir-offload-merge -split -input=%t/invalid.cir -targets=host-x86_64-unknown-linux-gnu -output=%t/out.cir 2>&1 | FileCheck %s --check-prefix=ERR-PARSE
 
 // RUN: not cir-offload-merge -split -input=%t/invalid-container.cir -targets=host-x86_64-unknown-linux-gnu -output=%t/out.cir 2>&1 | FileCheck %s --check-prefix=ERR-SPLIT-VERIFY
-// ERR-SPLIT-VERIFY: 'cir.offload.container' op expects at least one device module
+// ERR-SPLIT-VERIFY: expects at least one device module
 // ERR-SPLIT-VERIFY: error: failed to parse input file
 
 // RUN: not cir-offload-merge -split -input=%t/missing-bundle-id.cir -targets=host-x86_64-unknown-linux-gnu -output=%t/out.cir 2>&1 | FileCheck %s --check-prefix=ERR-MISSING-BUNDLE-ID
@@ -190,13 +190,19 @@ module attributes {cir.offload.container} {
 }
 
 //--- multi-container.cir
-module attributes {cir.offload.container} {
-  builtin.module @host attributes {cir.offload.bundle_id = "host-x86_64-unknown-linux-gnu", cir.offload.kind = #cir.offload<host>} {
+// Two modules carry the container attribute: the split must refuse rather than
+// pick one.
+module {
+  builtin.module @container0 attributes {cir.offload.container} {
+    builtin.module @host attributes {cir.offload.bundle_id = "host-x86_64-unknown-linux-gnu", cir.offload.kind = #cir.offload<host>} {
+    }
+    builtin.module @device_0 attributes {cir.offload.bundle_id = "cuda-nvptx64-nvidia-cuda--sm_80", cir.offload.kind = #cir.offload<device>} {
+    }
   }
-  builtin.module @device_0 attributes {cir.offload.bundle_id = "cuda-nvptx64-nvidia-cuda--sm_80", cir.offload.kind = #cir.offload<device>} {
-  }
-  builtin.module @host attributes {cir.offload.bundle_id = "host-aarch64-unknown-linux-gnu", cir.offload.kind = #cir.offload<host>} {
-  }
-  builtin.module @device_0 attributes {cir.offload.bundle_id = "cuda-nvptx64-nvidia-cuda--sm_90", cir.offload.kind = #cir.offload<device>} {
+  builtin.module @container1 attributes {cir.offload.container} {
+    builtin.module @host2 attributes {cir.offload.bundle_id = "host-aarch64-unknown-linux-gnu", cir.offload.kind = #cir.offload<host>} {
+    }
+    builtin.module @device_1 attributes {cir.offload.bundle_id = "cuda-nvptx64-nvidia-cuda--sm_90", cir.offload.kind = #cir.offload<device>} {
+    }
   }
 }
