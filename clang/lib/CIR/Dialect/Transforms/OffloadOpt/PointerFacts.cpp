@@ -365,8 +365,15 @@ struct OffloadPointerFactsPass
 };
 
 void OffloadPointerFactsPass::runOnOperation() {
+  mlir::ModuleOp container = getOperation();
+  // The pass is anchored on a module, but only an offload container holds the
+  // host<->device correspondence it reasons about. Any other module is left
+  // alone, matching the other container passes.
+  if (!cir::isOffloadContainer(container))
+    return;
+
   cir::KernelBindingTable &table = getAnalysis<cir::KernelBindingTable>();
-  cir::CIRBasicAliasAnalysis aliasAnalysis;
+  cir::CIRBasicAliasAnalysis aliasAnalysis(getOperation());
   bool changed = false;
 
   auto anchorOf = [](const cir::KernelBinding &binding) {

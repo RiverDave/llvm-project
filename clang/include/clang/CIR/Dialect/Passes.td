@@ -375,10 +375,12 @@ def OffloadLaunchBoundsPropagation
 }
 
 def OffloadPointerFacts
-    : Pass<"cir-offload-pointer-facts", "cir::OffloadContainerOp"> {
+    : Pass<"cir-offload-pointer-facts", "mlir::ModuleOp"> {
   let summary = "Stamp launch-derived pointer facts on kernel parameters";
   let description = [{
-    Runs over a `cir.offload.container`. For every device kernel, proves from
+    Runs on an offload container module (a module carrying the
+    `cir.offload.container` unit attribute) and is a no-op elsewhere. For every
+    device kernel, proves from
     all of its visible host launches that each pointer parameter points into a
     distinct `cudaMalloc` allocation and that no address-taken global, loaded
     pointer, forwarded value, escape, or in-kernel allocation can reach the
