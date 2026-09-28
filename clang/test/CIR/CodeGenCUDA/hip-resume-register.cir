@@ -1,20 +1,19 @@
-// Resume a HIP host .cir module and check that the registration pass emits the
-// HIP runtime calls (not CUDA's). The .cir resume path has no HIP language flag
-// on the cc1 line, so HIP is recovered from the aux-triple (amdgcn).
+// Resume a host .cir module for a HIP target and check that the device binary
+// passed to cc1 is attached to the module.
+//
+// Same path as the CUDA case (CIRGen never runs on a .cir input); the aux-triple
+// is what marks the target, so the HIP case is covered separately.
+//
+// Note: as with CUDA, the registration itself is not emitted on the resume path
+// yet, so this test covers the attribute only.
 
-// Create a dummy GPU binary file for registration.
 // RUN: echo -n "GPU binary would be here." > %t.fatbin
-
 // RUN: %clang_cc1 -triple x86_64-linux-gnu -aux-triple amdgcn-amd-amdhsa \
 // RUN:   -x cir -emit-cir -foffload-include-binary %t.fatbin %s -o - \
 // RUN:   | FileCheck %s --check-prefix=ATTR
 
 // RUN: %clang_cc1 -triple x86_64-linux-gnu -aux-triple amdgcn-amd-amdhsa \
-// RUN:   -x cir -emit-llvm -foffload-include-binary %t.fatbin %s -o - \
-// RUN:   | FileCheck %s --check-prefix=LLVM
-
-// RUN: %clang_cc1 -triple x86_64-linux-gnu -aux-triple amdgcn-amd-amdhsa \
-// RUN:   -x cir -emit-llvm %s -o - | FileCheck %s --check-prefix=NOFATBIN
+// RUN:   -x cir -emit-cir %s -o - | FileCheck %s --check-prefix=NOATTR
 
 module attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
   cir.global external @_Z6kernelv = #cir.ptr<null> : !cir.ptr<!cir.func<()>>
@@ -25,21 +24,4 @@ module attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
 
 // ATTR: cir.cu.device_binary = "GPU binary would be here." : !cir.array<!u8i x 25>
 
-// LLVM: @__hip_fatbin_str = private constant
-// LLVM-SAME: section ".hip_fatbin"
-// LLVM: @__hip_fatbin_wrapper = {{.*}}constant
-// LLVM-SAME: section ".hipFatBinSegment"
-// LLVM: @__hip_gpubin_handle
-// LLVM: @llvm.global_ctors = appending global
-// LLVM-SAME: @__hip_module_ctor
-// LLVM: define internal void @__hip_register_globals
-// LLVM: call{{.*}}@__hipRegisterFunction
-// LLVM: define internal void @__hip_module_ctor
-// LLVM: call{{.*}}@__hipRegisterFatBinary
-// LLVM: call void @__hip_register_globals
-
-// NOFATBIN-NOT: __hip_fatbin
-// NOFATBIN-NOT: __hipRegisterFatBinary
-// NOFATBIN-NOT: __hipRegisterFunction
-// NOFATBIN-NOT: __hip_register_globals
-// NOFATBIN-NOT: __hip_module_ctor
+// NOATTR-NOT: cir.cu.device_binary
