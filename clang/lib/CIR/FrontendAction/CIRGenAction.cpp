@@ -382,6 +382,35 @@ static std::unique_ptr<raw_pwrite_stream>
 getOutputStream(CompilerInstance &CI, StringRef InFile,
                 CIRGenAction::OutputType Action);
 
+// CIRGen attaches the device binary while compiling device code
+// (CIRGenCUDANV's recordDeviceBinary). A resumed .cir input never runs CIRGen,
+// so re-attach it from the file the driver passed; LoweringPrepare registers
+// whatever binary the module carries.
+static void attachDeviceBinaryFromFile(mlir::ModuleOp module,
+                                       CompilerInstance &CI) {
+  StringRef fileName = CI.getCodeGenOpts().OffloadBinaryToEmbedFile;
+  if (fileName.empty() ||
+      module->getAttr(cir::CIRDialect::getCUDADeviceBinaryAttrName()))
+    return;
+
+  auto binaryOrErr = CI.getVirtualFileSystem().getBufferForFile(fileName);
+  if (std::error_code ec = binaryOrErr.getError()) {
+    CI.getDiagnostics().Report(diag::err_cannot_open_file)
+        << fileName << ec.message();
+    return;
+  }
+
+  // Typed as the fatbin global's array type, matching recordDeviceBinary:
+  // LoweringPrepare uses this attribute as the initializer as-is.
+  StringRef bytes = binaryOrErr.get()->getBuffer();
+  mlir::MLIRContext &ctx = *module.getContext();
+  auto charTy = cir::IntType::get(&ctx, CI.getTarget().getCharWidth(),
+                                  /*isSigned=*/false);
+  auto binaryTy = cir::ArrayType::get(charTy, bytes.size());
+  module->setAttr(cir::CIRDialect::getCUDADeviceBinaryAttrName(),
+                  mlir::StringAttr::get(bytes, binaryTy));
+}
+
 void CIRGenAction::ExecuteAction() {
   if (getCurrentFileKind().getLanguage() != Language::CIR) {
     ASTFrontendAction::ExecuteAction();
@@ -440,6 +469,8 @@ void CIRGenAction::ExecuteAction() {
         << ModuleTriple.getValue() << TargetTriple;
     return;
   }
+
+  attachDeviceBinaryFromFile(*Module, CI);
 
   // The CIR-to-CIR pipeline is not run: CIR printed by -emit-cir has already
   // been through it, and its lowering passes are not idempotent.
