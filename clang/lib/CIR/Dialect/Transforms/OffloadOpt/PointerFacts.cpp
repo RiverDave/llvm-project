@@ -146,12 +146,35 @@ static bool slotHoldsDerivedPointer(Value slot, cir::FuncOp kernel) {
   return false;
 }
 
-static bool bodyAllowsNoalias(cir::FuncOp kernel) {
-  if (kernel.isDeclaration() || kernel.getBody().empty())
-    return false;
+// A callee without a body whose memory behavior is known: libdevice math
+// (`__nv_*`, a name reserved to the implementation) or a declaration that
+// touches no memory besides its arguments. Only consulted for declarations, so
+// a user-defined body under one of these names is still walked.
+static bool isKnownSafeDeclaration(cir::FuncOp fn, cir::CallOp call) {
+  if (fn.getSymName().starts_with("__nv_"))
+    return true;
+  auto touchesNoOtherMemory = [](std::optional<cir::MemoryEffectsAttr> me) {
+    return me && me->getOther() == cir::ModRefInfo::NoModRef;
+  };
+  return touchesNoOtherMemory(fn.getMemoryEffects()) ||
+         touchesNoOtherMemory(call.getMemoryEffects());
+}
 
+// Thread-geometry reads and CTA barriers; neither accesses memory through a
+// pointer.
+static bool isAllowedIntrinsic(llvm::StringRef name) {
+  return name.starts_with("nvvm.read.ptx.sreg.") ||
+         name.starts_with("nvvm.barrier.cta.");
+}
+
+// Checks one function reachable from the kernel and collects the callees whose
+// bodies must be checked next. `fn`'s own parameters anchor the derivation
+// checks: in a callee they can only carry pointers the caller was allowed to
+// pass.
+static bool functionAllowsNoalias(cir::FuncOp fn,
+                                  llvm::SmallVectorImpl<cir::FuncOp> &callees) {
   bool ok = true;
-  kernel.walk([&](Operation *op) {
+  fn.walk([&](Operation *op) {
     if (!ok)
       return;
 
@@ -170,11 +193,37 @@ static bool bodyAllowsNoalias(cir::FuncOp kernel) {
         return;
       }
       for (Value operand : call.getArgOperands())
-        if (derivesFromPointerParam(operand, kernel) ||
-            slotHoldsDerivedPointer(operand, kernel)) {
+        if (derivesFromPointerParam(operand, fn) ||
+            slotHoldsDerivedPointer(operand, fn)) {
           ok = false;
           return;
         }
+      // The callee runs during the kernel, so its body is part of the proof.
+      // Indirect calls and unknown declarations cannot be checked.
+      cir::FuncOp target;
+      if (callee)
+        target = SymbolTable::lookupNearestSymbolFrom<cir::FuncOp>(
+            call, call.getCalleeAttr());
+      if (!target) {
+        ok = false;
+        return;
+      }
+      if (!target.isDeclaration())
+        callees.push_back(target);
+      else if (!isKnownSafeDeclaration(target, call))
+        ok = false;
+      return;
+    }
+
+    if (auto intrinsic = mlir::dyn_cast<cir::LLVMIntrinsicCallOp>(op)) {
+      if (!isAllowedIntrinsic(intrinsic.getIntrinsicName()))
+        ok = false;
+      return;
+    }
+
+    if (mlir::isa<CallOpInterface>(op)) {
+      ok = false;
+      return;
     }
 
     if (auto load = mlir::dyn_cast<cir::LoadOp>(op)) {
@@ -192,7 +241,7 @@ static bool bodyAllowsNoalias(cir::FuncOp kernel) {
       // Storing into a local stack slot keeps the value on the stack; escapes
       // through memory or callees are caught by the other obligations (and by
       // slotHoldsDerivedPointer at call sites).
-      if (derivesFromPointerParam(store.getValue(), kernel) &&
+      if (derivesFromPointerParam(store.getValue(), fn) &&
           !store.getAddr().getDefiningOp<cir::AllocaOp>()) {
         ok = false;
         return;
@@ -201,13 +250,36 @@ static bool bodyAllowsNoalias(cir::FuncOp kernel) {
 
     if (auto cast = mlir::dyn_cast<cir::CastOp>(op)) {
       if (cast.getKind() == cir::CastKind::ptr_to_int &&
-          derivesFromPointerParam(cast.getSrc(), kernel)) {
+          derivesFromPointerParam(cast.getSrc(), fn)) {
+        ok = false;
+        return;
+      }
+      // A pointer made from an integer is not based on any parameter, yet it
+      // can hold the address of a parameter's buffer.
+      if (cast.getKind() == cir::CastKind::int_to_ptr) {
         ok = false;
         return;
       }
     }
   });
   return ok;
+}
+
+// The kernel and every function it can call must pass functionAllowsNoalias.
+static bool bodyAllowsNoalias(cir::FuncOp kernel) {
+  if (kernel.isDeclaration() || kernel.getBody().empty())
+    return false;
+
+  llvm::SmallPtrSet<Operation *, 8> visited;
+  llvm::SmallVector<cir::FuncOp, 8> worklist{kernel};
+  while (!worklist.empty()) {
+    cir::FuncOp fn = worklist.pop_back_val();
+    if (!visited.insert(fn.getOperation()).second)
+      continue;
+    if (!functionAllowsNoalias(fn, worklist))
+      return false;
+  }
+  return true;
 }
 
 // The runtime declares cudaMalloc as a C function, but the C++ headers also
