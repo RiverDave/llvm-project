@@ -1,0 +1,400 @@
+// RUN: cir-opt %s -split-input-file \
+// RUN:   -pass-pipeline="builtin.module(cir-offload-pointer-facts)" | FileCheck %s
+
+// Everything the kernel can call runs during the launch, so callees are checked
+// with the same rules as the kernel body.
+
+// A callee writes a kernel buffer through a device global.
+// CHECK-LABEL: cir.func @k(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.global external @g_ptr = #cir.ptr<null> : !cir.ptr<!cir.float>
+    cir.func no_inline @bump() {
+      %g = cir.get_global @g_ptr : !cir.ptr<!cir.ptr<!cir.float>>
+      %p = cir.load %g : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %two = cir.const #cir.fp<2.0> : !cir.float
+      cir.store %two, %p : !cir.float, !cir.ptr<!cir.float>
+      cir.return
+    }
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %one = cir.const #cir.fp<1.0> : !cir.float
+      cir.store %one, %arg1 : !cir.float, !cir.ptr<!cir.float>
+      cir.call @bump() : () -> ()
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// A callee whose body only reads thread geometry keeps the fact.
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func no_inline @tid() -> !s32i {
+      %t = cir.call_llvm_intrinsic "nvvm.read.ptx.sreg.tid.x"  : () -> !s32i
+      cir.return %t : !s32i
+    }
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %t = cir.call @tid() : () -> !s32i
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// A libdevice declaration is known not to touch kernel buffers.
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func private @__nv_sqrtf(!cir.float) -> !cir.float
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %x = cir.const #cir.fp<4.0> : !cir.float
+      %r = cir.call @__nv_sqrtf(%x) : (!cir.float) -> !cir.float
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// A body under a libdevice name is still walked.
+// CHECK-LABEL: cir.func @k(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.global external @g_ptr = #cir.ptr<null> : !cir.ptr<!cir.float>
+    cir.func no_inline @__nv_sqrtf(%arg0: !cir.float) -> !cir.float {
+      %g = cir.get_global @g_ptr : !cir.ptr<!cir.ptr<!cir.float>>
+      %p = cir.load %g : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.store %arg0, %p : !cir.float, !cir.ptr<!cir.float>
+      cir.return %arg0 : !cir.float
+    }
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %x = cir.const #cir.fp<4.0> : !cir.float
+      %r = cir.call @__nv_sqrtf(%x) : (!cir.float) -> !cir.float
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// An unknown declaration cannot be checked.
+// CHECK-LABEL: cir.func @k(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func private @ext()
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %one = cir.const #cir.fp<1.0> : !cir.float
+      cir.store %one, %arg1 : !cir.float, !cir.ptr<!cir.float>
+      cir.call @ext() : () -> ()
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// A declaration that touches no memory besides its arguments keeps the fact.
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func private @konst(!cir.float) -> !cir.float attributes {memory_effects = #cir.memory_effects<other = none, arg_mem = none, inaccessible_mem = none, errno_mem = none, target_mem0 = none, target_mem1 = none>}
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %x = cir.const #cir.fp<4.0> : !cir.float
+      %r = cir.call @konst(%x) : (!cir.float) -> !cir.float
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// A declaration that may read other memory can read a kernel buffer.
+// CHECK-LABEL: cir.func @k(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func private @pure(!cir.float) -> !cir.float attributes {memory_effects = #cir.memory_effects<other = read, arg_mem = read, inaccessible_mem = read, errno_mem = read, target_mem0 = read, target_mem1 = read>}
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %x = cir.const #cir.fp<4.0> : !cir.float
+      %r = cir.call @pure(%x) : (!cir.float) -> !cir.float
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// A pointer made from an integer can hold a kernel buffer's address.
+// CHECK-LABEL: cir.func @k(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %addr = cir.const #cir.int<4096> : !u64i
+      %p = cir.cast int_to_ptr %addr : !u64i -> !cir.ptr<!cir.float>
+      %one = cir.const #cir.fp<1.0> : !cir.float
+      cir.store %one, %p : !cir.float, !cir.ptr<!cir.float>
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// A CTA barrier keeps the fact.
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %z = cir.const #cir.int<0> : !s32i
+      %s = cir.call_llvm_intrinsic "nvvm.barrier.cta.sync.aligned.all" %z : (!s32i) -> !void
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// Any other intrinsic drops the fact.
+// CHECK-LABEL: cir.func @k(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %s = cir.call_llvm_intrinsic "nvvm.membar.gl"  : () -> !void
+      cir.return
+    }
+  }
+}

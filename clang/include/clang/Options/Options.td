@@ -3537,6 +3537,13 @@ defm clangir : BoolFOption<"clangir",
   PosFlag<SetTrue, [], [ClangOption, CC1Option], "Use the ClangIR pipeline to compile">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option], "Use the AST -> LLVM pipeline to compile">,
   BothFlags<[], [ClangOption, CC1Option], "">>;
+def fclangir_offload_merge_pointer_facts : Flag<["-"], "fclangir-offload-merge-pointer-facts">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Run the launch-derived pointer-facts pass in the ClangIR offload-merge pipeline (default).">;
+def fno_clangir_offload_merge_pointer_facts : Flag<["-"], "fno-clangir-offload-merge-pointer-facts">,
+  Visibility<[ClangOption]>, Group<f_Group>,
+  HelpText<"Skip the launch-derived pointer-facts pass in the ClangIR offload-merge pipeline (perf A/B).">;
+
 def clangir_offload_merge : Flag<["--"], "clangir-offload-merge">,
   Visibility<[ClangOption]>,
   HelpText<"Merge serialized ClangIR host/device offload modules before backend compilation.">;
