@@ -8,8 +8,10 @@
 //
 // Stamps `llvm.noalias` on device-kernel pointer parameters when every visible
 // launch of the kernel passes pointers that provably come from distinct
-// cudaMalloc slots and the kernel body cannot reach the pointer through any
-// other path. Unchecked allocations are accepted; only a free before the
+// cudaMalloc calls and the kernel body cannot reach the pointer through any
+// other path. A launch argument's root is the cudaMalloc whose result reaches
+// the launch: it dominates the read of the slot and every other write to the
+// slot dominates it. Unchecked allocations are accepted; only a free before the
 // launch invalidates a slot.
 //
 // The analysis is conservative and kernel-wide: a repeated root, an unprovable
@@ -27,6 +29,7 @@
 #include "clang/CIR/Dialect/Transforms/OffloadOpt/KernelBindingTable.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Dominance.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Demangle/Demangle.h"
@@ -69,27 +72,14 @@ static void remarkStamped(cir::FuncOp kernel, llvm::StringRef kernelName,
       << remark::metric("launchSites", numLaunchSites);
 }
 
-// True when `a` executes before `b` in the top-level block of the same host
-// function, looking through structured regions such as `cir.scope`.
-static bool lexicallyBefore(Operation *a, Operation *b) {
-  auto fn = a->getParentOfType<cir::FuncOp>();
-  if (!fn || b->getParentOfType<cir::FuncOp>() != fn)
-    return false;
-  Operation *ta = a, *tb = b;
-  while (ta->getParentOp() != fn.getOperation())
-    ta = ta->getParentOp();
-  while (tb->getParentOp() != fn.getOperation())
-    tb = tb->getParentOp();
-  return ta->getBlock() == tb->getBlock() && ta->isBeforeInBlock(tb);
-}
-
 // The cudaMalloc out-parameter slot a launch argument derives from.
 struct SlotRoot {
   Value slot;
   cir::CallOp malloc;
 };
 
-static bool resolveValueToRoot(Value v, SlotRoot &out, unsigned depth);
+static bool resolveValueToRoot(Value v, SlotRoot &out, DominanceInfo &dom,
+                               unsigned depth);
 
 // Whether `v` transitively derives from a pointer parameter of `kernel`. Only
 // pointer-typed operands are followed, so comparing a pointer against null and
@@ -220,11 +210,6 @@ static bool bodyAllowsNoalias(cir::FuncOp kernel) {
   return ok;
 }
 
-// Resolve the storage address of a launch argument to its allocation root. The
-// address must be an alloca that either a cudaMalloc wrote through (an
-// allocation instance) or that a single store forwards into; the slot and its
-// cast family must have no escaping use and no writer after the allocation.
-//
 // The runtime declares cudaMalloc as a C function, but the C++ headers also
 // provide an inline `template <class T> cudaMalloc(T **, size_t)` shim that
 // PolyBench-style code calls without a cast; CIRGen keeps the call to the
@@ -240,7 +225,77 @@ static bool isCudaMallocSymbol(llvm::StringRef callee) {
   return llvm::StringRef(demangled).contains("cudaMalloc<");
 }
 
-static bool resolveAddressToRoot(Value addr, SlotRoot &out, unsigned depth) {
+// Sorts every use of a host variable holding a device pointer (`float *A`), and
+// of the casts that still point at it.
+//   Ignored:   a load of the variable (it only reads the device address out:
+//              the launch, cudaMemcpy, `C = A`) and a cast that still points at
+//              the variable.
+//   Collected: cudaMalloc(&A, ...) and a store into A (`A = ...`); these change
+//              which device address A holds.
+//   Rejected:  anything else, such as passing &A to another callee or storing
+//              &A somewhere; whoever holds &A could rewrite A unseen.
+// Returns false on the first rejected use.
+static bool
+classifyDevPtrWriters(const llvm::SmallPtrSetImpl<Value> &family,
+                      llvm::SmallVectorImpl<Operation *> &devPtrWriters) {
+  for (Value cur : family) {
+    for (OpOperand &use : cur.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto cast = mlir::dyn_cast<cir::CastOp>(user)) {
+        if (cast.getSrc() == cur && cast.isAllocaPreservingCast())
+          continue;
+        return false; // Opaque cast: laundering or escape.
+      }
+      if (auto load = mlir::dyn_cast<cir::LoadOp>(user)) {
+        if (load.getAddr() == cur)
+          continue;
+        return false;
+      }
+      if (auto call = mlir::dyn_cast<cir::CallOp>(user)) {
+        std::optional<llvm::StringRef> callee = call.getCallee();
+        if (callee && isCudaMallocSymbol(*callee) &&
+            !call.getArgOperands().empty() &&
+            call.getArgOperands().front() == cur) {
+          devPtrWriters.push_back(call);
+          continue;
+        }
+        return false; // Slot address handed to another callee: escape.
+      }
+      if (auto store = mlir::dyn_cast<cir::StoreOp>(user)) {
+        if (store.getAddr() == cur) {
+          devPtrWriters.push_back(store);
+          continue;
+        }
+        return false; // Slot value stored elsewhere: escape.
+      }
+      return false; // Any other use: escape.
+    }
+  }
+  return true;
+}
+
+// The writer whose device address `devPtrLoad` reads: it dominates
+// `devPtrLoad` and every other writer dominates it, so no other write lands in
+// between.
+static Operation *reachingWriter(llvm::ArrayRef<Operation *> devPtrWriters,
+                                 Operation *devPtrLoad, DominanceInfo &dom) {
+  for (Operation *w : devPtrWriters)
+    if (dom.properlyDominates(w, devPtrLoad) &&
+        llvm::all_of(devPtrWriters, [&](Operation *o) {
+          return o == w || dom.properlyDominates(o, w);
+        }))
+      return w;
+  return nullptr;
+}
+
+// Resolve the variable `devPtrLoad` reads from to its allocation root. The
+// variable must be an alloca whose address never escapes; the writer reaching
+// `devPtrLoad` is either a cudaMalloc (the root) or a store whose value is
+// resolved in turn. `devPtrLoad` starts as the launch argument's load and, when
+// following `C = A`, becomes the load of A feeding that store.
+static bool resolveAddressToRoot(Value addr, Operation *devPtrLoad,
+                                 SlotRoot &out, DominanceInfo &dom,
+                                 unsigned depth) {
   if (depth > 8)
     return false;
   addr = cir::getUnderlyingObject(addr);
@@ -262,66 +317,28 @@ static bool resolveAddressToRoot(Value addr, SlotRoot &out, unsigned depth) {
     }
   }
 
-  llvm::SmallVector<cir::CallOp, 2> mallocs;
-  llvm::SmallVector<cir::StoreOp, 2> stores;
-  for (Value cur : family) {
-    for (OpOperand &use : cur.getUses()) {
-      Operation *user = use.getOwner();
-      if (auto cast = mlir::dyn_cast<cir::CastOp>(user)) {
-        if (cast.getSrc() == cur && cast.isAllocaPreservingCast())
-          continue;
-        return false; // Opaque cast: laundering or escape.
-      }
-      if (auto load = mlir::dyn_cast<cir::LoadOp>(user)) {
-        if (load.getAddr() == cur)
-          continue;
-        return false;
-      }
-      if (auto call = mlir::dyn_cast<cir::CallOp>(user)) {
-        std::optional<llvm::StringRef> callee = call.getCallee();
-        if (callee && isCudaMallocSymbol(*callee) &&
-            !call.getArgOperands().empty() &&
-            call.getArgOperands().front() == cur) {
-          mallocs.push_back(call);
-          continue;
-        }
-        return false; // Slot address handed to another callee: escape.
-      }
-      if (auto store = mlir::dyn_cast<cir::StoreOp>(user)) {
-        if (store.getAddr() == cur) {
-          stores.push_back(store);
-          continue;
-        }
-        return false; // Slot value stored elsewhere: escape.
-      }
-      return false; // Any other use: escape.
-    }
-  }
+  llvm::SmallVector<Operation *, 4> devPtrWriters;
+  if (!classifyDevPtrWriters(family, devPtrWriters))
+    return false;
 
-  if (mallocs.size() == 1) {
-    // A store after the allocation is a second writer / invalidation; only
-    // initialization that precedes the allocation is harmless.
-    for (cir::StoreOp store : stores)
-      if (!lexicallyBefore(store.getOperation(), mallocs.front().getOperation()))
-        return false;
-    out = {addr, mallocs.front()};
+  Operation *writer = reachingWriter(devPtrWriters, devPtrLoad, dom);
+  if (!writer)
+    return false;
+  if (auto malloc = mlir::dyn_cast<cir::CallOp>(writer)) {
+    out = {addr, malloc};
     return true;
   }
-
-  if (mallocs.empty() && stores.size() == 1) {
-    // Single-store forwarding: the launch reads the value this store wrote.
-    return resolveValueToRoot(stores.front().getValue(), out, depth + 1);
-  }
-
-  return false;
+  return resolveValueToRoot(mlir::cast<cir::StoreOp>(writer).getValue(), out,
+                            dom, depth + 1);
 }
 
-static bool resolveValueToRoot(Value v, SlotRoot &out, unsigned depth) {
+static bool resolveValueToRoot(Value v, SlotRoot &out, DominanceInfo &dom,
+                               unsigned depth) {
   if (!v || depth > 8)
     return false;
   v = cir::getUnderlyingObject(v);
   if (auto load = v.getDefiningOp<cir::LoadOp>())
-    return resolveAddressToRoot(load.getAddr(), out, depth + 1);
+    return resolveAddressToRoot(load.getAddr(), load, out, dom, depth + 1);
   return false;
 }
 
@@ -373,7 +390,7 @@ void OffloadPointerFactsPass::runOnOperation() {
     return;
 
   cir::KernelBindingTable &table = getAnalysis<cir::KernelBindingTable>();
-  cir::CIRBasicAliasAnalysis aliasAnalysis(getOperation());
+  DominanceInfo &dom = getAnalysis<DominanceInfo>();
   bool changed = false;
 
   auto anchorOf = [](const cir::KernelBinding &binding) {
@@ -449,7 +466,7 @@ void OffloadPointerFactsPass::runOnOperation() {
           continue;
         SlotRoot root;
         cir::CallOp launchCall = site.stubCall;
-        if (!resolveValueToRoot(site.getArg(i), root, 0)) {
+        if (!resolveValueToRoot(site.getArg(i), root, dom, 0)) {
           kernelOk = false;
           reason = "no allocation root for pointer argument " + std::to_string(i);
           break;
@@ -472,7 +489,7 @@ void OffloadPointerFactsPass::runOnOperation() {
         for (unsigned j = i + 1; j != numArgs; ++j) {
           if (!isPointer[j])
             continue;
-          if (!aliasAnalysis.alias(roots[i].slot, roots[j].slot).isNo()) {
+          if (roots[i].malloc == roots[j].malloc) {
             kernelOk = false;
             reason = "repeated allocation root across pointer arguments";
             break;

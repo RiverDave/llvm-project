@@ -368,9 +368,9 @@ module attributes {cir.offload.container} {
 
 // -----
 
-// The slot is reallocated after the checked allocation.
-// CHECK-LABEL: cir.func @kern_inval(
-// CHECK-NOT: llvm.noalias
+// The slot is reallocated after the checked allocation: the second allocation
+// reaches the launch and overwrites the first.
+// CHECK-LABEL: cir.func @kern_inval(%arg0: !cir.ptr<!s32i> {llvm.noalias})
 // CHECK: cc(ptx_kernel)
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
