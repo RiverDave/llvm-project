@@ -163,6 +163,7 @@ static bool isKnownSafeDeclaration(cir::FuncOp fn, cir::CallOp call) {
 // Thread-geometry reads and CTA barriers; neither accesses memory through a
 // pointer.
 static bool isAllowedIntrinsic(llvm::StringRef name) {
+  // TODO: Handle AMD intrinsics
   return name.starts_with("nvvm.read.ptx.sreg.") ||
          name.starts_with("nvvm.barrier.cta.");
 }
@@ -300,8 +301,9 @@ static bool isCudaMallocSymbol(llvm::StringRef callee) {
 // Sorts every use of a host variable holding a device pointer (`float *A`), and
 // of the casts that still point at it.
 //   Ignored:   a load of the variable (it only reads the device address out:
-//              the launch, cudaMemcpy, `C = A`) and a cast that still points at
-//              the variable.
+//              the launch, cudaMemcpy, `C = A`), a cast that still points at
+//              the variable, and lifetime markers (they only bound when A is
+//              alive; reading A outside that range is undefined).
 //   Collected: cudaMalloc(&A, ...) and a store into A (`A = ...`); these change
 //              which device address A holds.
 //   Rejected:  anything else, such as passing &A to another callee or storing
@@ -340,6 +342,8 @@ classifyDevPtrWriters(const llvm::SmallPtrSetImpl<Value> &family,
         }
         return false; // Slot value stored elsewhere: escape.
       }
+      if (mlir::isa<cir::LifetimeStartOp, cir::LifetimeEndOp>(user))
+        continue;
       return false; // Any other use: escape.
     }
   }
@@ -414,18 +418,43 @@ static bool resolveValueToRoot(Value v, SlotRoot &out, DominanceInfo &dom,
   return false;
 }
 
+// Whether `a` runs after `b`: compares their ancestors in the closest block
+// that holds both. Ops in different regions of the same op are unordered.
+static bool isAfterInProgramOrder(Operation *a, Operation *b) {
+  for (Block *blk = a->getBlock(); blk;
+       blk = blk->getParentOp() ? blk->getParentOp()->getBlock() : nullptr) {
+    Operation *aa = blk->findAncestorOpInBlock(*a);
+    Operation *bb = blk->findAncestorOpInBlock(*b);
+    if (aa && bb)
+      return aa != bb && bb->isBeforeInBlock(aa);
+  }
+  return false;
+}
+
+// Whether a free can run between the root malloc and the launch. A free that
+// always runs before the malloc is replaced by it; one after the launch only
+// matters if a loop brings control back to the launch without the malloc.
+static bool freeCanReachLaunch(Operation *free, cir::CallOp malloc,
+                               Operation *launch, DominanceInfo &dom) {
+  if (dom.properlyDominates(free, malloc))
+    return false;
+  if (!isAfterInProgramOrder(free, launch))
+    return true;
+  for (auto loop = free->getParentOfType<cir::LoopOpInterface>(); loop;
+       loop = loop->getParentOfType<cir::LoopOpInterface>())
+    if (loop->isAncestor(launch) && !loop->isAncestor(malloc))
+      return true;
+  return false;
+}
+
 // Whether the launched allocation is freed between its allocation and the
 // launch: the pointer would then be dangling and the fact unsound. A free after
 // the launch is the normal cleanup and does not invalidate the fact.
 static bool allocationFreed(cir::CallOp mallocCall, Value slot,
-                            Operation *launch) {
+                            Operation *launch, DominanceInfo &dom) {
   auto hostFn = mallocCall->getParentOfType<cir::FuncOp>();
   if (!hostFn)
     return false;
-  Block *entry = mallocCall->getBlock();
-  Operation *launchAncestor = launch;
-  while (launchAncestor && launchAncestor->getBlock() != entry)
-    launchAncestor = launchAncestor->getParentOp();
 
   bool freed = false;
   hostFn.walk([&](cir::CallOp call) {
@@ -434,8 +463,9 @@ static bool allocationFreed(cir::CallOp mallocCall, Value slot,
     std::optional<llvm::StringRef> callee = call.getCallee();
     if (!callee || !callee->contains_insensitive("free"))
       return;
-    if (call->getBlock() == entry && launchAncestor &&
-        !call->isBeforeInBlock(launchAncestor))
+    // The launch itself can match by name (a kernel called `*free*`).
+    if (call.getOperation() == launch ||
+        !freeCanReachLaunch(call, mallocCall, launch, dom))
       return;
     for (Value arg : call.getArgOperands()) {
       auto load = cir::stripPointerCasts(arg).getDefiningOp<cir::LoadOp>();
@@ -543,8 +573,8 @@ void OffloadPointerFactsPass::runOnOperation() {
           reason = "no allocation root for pointer argument " + std::to_string(i);
           break;
         }
-        if (allocationFreed(root.malloc, root.slot,
-                            launchCall.getOperation())) {
+        if (allocationFreed(root.malloc, root.slot, launchCall.getOperation(),
+                            dom)) {
           kernelOk = false;
           reason = "allocation freed before the launch for pointer argument " +
                    std::to_string(i);
