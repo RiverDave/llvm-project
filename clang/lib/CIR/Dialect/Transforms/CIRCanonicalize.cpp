@@ -70,7 +70,7 @@ void CIRCanonicalizePass::runOnOperation() {
 
     // Many operations are here to perform a manual `fold` in
     // applyOpPatternsGreedily.
-    if (isa<BrOp, BrCondOp, BuiltinIntCastOp, CastOp, ScopeOp, SwitchOp,
+    if (isa<BrOp, BrCondOp, BuiltinIntCastOp, CastOp, ScopeOp, IfOp, SwitchOp,
             SelectOp, IncOp, DecOp, MinusOp, FNegOp, NotOp, AddOp, MulOp, AndOp,
             OrOp, XorOp, MaxOp, MinOp, ComplexCreateOp, ComplexImagOp,
             ComplexRealOp, VecCmpOp, VecCreateOp, VecExtractOp, VecShuffleOp,

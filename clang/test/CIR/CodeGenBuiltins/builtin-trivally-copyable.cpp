@@ -27,31 +27,20 @@ int test_trivially_copyable_as_bool() {
   return 0;
 }
 
+// The constant-condition branch folds away in the canonicalize step of the CIR
+// pipeline, so only the unguarded path is emitted.
 // CIR: cir.func {{.*}} @_Z31test_trivially_copyable_as_boolv()
-// CIR:   %[[FALSE:.*]] = cir.const #false
-// CIR:   cir.if %[[FALSE]] {
-// CIR:     %[[NEG_ONE:.*]] = cir.const #cir.int<-1> : !s32i
-// CIR:     cir.store %[[NEG_ONE]], %[[RETVAL:.*]]
-// CIR:     %[[RET:.*]] = cir.load %[[RETVAL:.*]] : !cir.ptr<!s32i>, !s32i
-// CIR:     cir.return %[[RET:.*]] : !s32i
-// CIR:   }
 // CIR:   %[[ZERO:.*]] = cir.const #cir.int<0> : !s32i
 // CIR:   cir.store %[[ZERO]], %[[RETVAL:.*]] : !s32i, !cir.ptr<!s32i>
 // CIR:   %[[RET:.*]] = cir.load %[[RETVAL:.*]] : !cir.ptr<!s32i>, !s32i
 // CIR:   cir.return %[[RET:.*]] : !s32i
+// CIR-NOT: cir.const #false
 
 // LLVM: define{{.*}} i32 @_Z31test_trivially_copyable_as_boolv()
-// LLVM:   br i1 false, label %[[IF_THEN:.*]], label %[[IF_ELSE:.*]]
-// LLVM: [[IF_THEN]]:
-// LLVM:   store i32 -1, ptr %[[RETVAL:.*]]
-// LLVM:   %[[RET:.*]] = load i32, ptr %[[RETVAL:.*]]
-// LLVM:   ret i32 %[[RET:.*]]
-// LLVM: [[IF_ELSE]]:
-// LLVM:   br label %[[IF_END:.*]]
-// LLVM: [[IF_END]]:
 // LLVM:   store i32 0, ptr %[[RETVAL:.*]]
 // LLVM:   %[[RET:.*]] = load i32, ptr %[[RETVAL:.*]]
 // LLVM:   ret i32 %[[RET:.*]]
+// LLVM-NOT: br i1 false
 
 // OGCG: define{{.*}} i32 @_Z31test_trivially_copyable_as_boolv()
 // OGCG:   ret i32 0

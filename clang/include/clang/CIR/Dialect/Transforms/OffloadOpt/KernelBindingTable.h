@@ -52,7 +52,9 @@ struct LaunchSite {
   // The constant passed for argument `i`, or null if it is not a constant.
   mlir::TypedAttr getConstArg(unsigned i) const;
 
-  // A launch dimension, recovered from the dim3 temporary the push call reads.
+  // A launch dimension, recovered by walking the pushed value back to its dim3
+  // constructor. For the temporary post-ABI path, this first reverses the
+  // x86_64 SysV coerce-slot flattening.
   //
   // Failing to recover a dimension and recovering a dimension that turns out to
   // be a runtime value are different answers: `isTraced` reports the first,
