@@ -27,6 +27,7 @@
 #include "clang/CIR/Dialect/IR/CIROpsEnums.h"
 #include "clang/CIR/Dialect/Passes.h"
 #include "clang/CIR/Dialect/Transforms/OffloadOpt/KernelBindingTable.h"
+#include "clang/CIR/Dialect/Transforms/OffloadOpt/KernelCloning.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Dominance.h"
@@ -478,6 +479,46 @@ static bool allocationFreed(cir::CallOp mallocCall, Value slot,
   return freed;
 }
 
+// Whether one launch passes every pointer argument from its own allocation:
+// each resolves to a root malloc that is not freed before the launch, and no
+// two share a root. On failure `reason` says why.
+static bool launchHasDistinctRoots(const cir::LaunchSite &site,
+                                   llvm::ArrayRef<bool> isPointer,
+                                   DominanceInfo &dom, std::string &reason) {
+  unsigned numArgs = isPointer.size();
+  cir::CallOp launchCall = site.stubCall;
+  llvm::SmallVector<SlotRoot> roots(numArgs);
+  for (unsigned i = 0; i != numArgs; ++i) {
+    if (!isPointer[i])
+      continue;
+    if (!resolveValueToRoot(site.getArg(i), roots[i], dom, 0)) {
+      reason = "no allocation root for pointer argument " + std::to_string(i);
+      return false;
+    }
+    if (allocationFreed(roots[i].malloc, roots[i].slot,
+                        launchCall.getOperation(), dom)) {
+      reason = "allocation freed before the launch for pointer argument " +
+               std::to_string(i);
+      return false;
+    }
+  }
+  for (unsigned i = 0; i != numArgs; ++i)
+    for (unsigned j = i + 1; j != numArgs; ++j)
+      if (isPointer[i] && isPointer[j] && roots[i].malloc == roots[j].malloc) {
+        reason = "repeated allocation root across pointer arguments";
+        return false;
+      }
+  return true;
+}
+
+// Nothing outside this pass knows a clone's name; only the launches it was
+// made for may reach it. Host side only: device kernels stay externally
+// visible, as clang emits them, since the runtime looks them up by name.
+static void makeInternal(cir::FuncOp fn) {
+  fn.setLinkage(cir::GlobalLinkageKind::InternalLinkage);
+  fn.setSymVisibility("private");
+}
+
 struct OffloadPointerFactsPass
     : public impl::OffloadPointerFactsBase<OffloadPointerFactsPass> {
   void runOnOperation() override;
@@ -502,17 +543,19 @@ void OffloadPointerFactsPass::runOnOperation() {
 
   LDBG() << "container has " << table.size() << " kernel binding(s)";
 
-  for (const auto &entry : table) {
-    llvm::StringRef kernelName = entry.first;
-    const cir::KernelBinding &binding = entry.second;
+  // Cloning adds bindings and rewrites launches, so walk a snapshot.
+  llvm::SmallVector<std::pair<std::string, cir::KernelBinding>> bindings;
+  for (const auto &entry : table)
+    bindings.emplace_back(entry.first.str(), entry.second);
+
+  for (const auto &[kernelNameStr, binding] : bindings) {
+    llvm::StringRef kernelName = kernelNameStr;
 
     LDBG() << "kernel '" << kernelName << "': " << binding.launchSites.size()
            << " launch site(s), " << binding.deviceKernels.size()
            << " device kernel(s)";
 
-    // Closed-world gate: reuse the binding table's linkage/visibility predicate
-    // so this pass and the other container passes agree on which launches are
-    // observable. A kernel launched nowhere yields no launch-derived facts.
+    // A kernel launched nowhere yields no launch-derived facts.
     if (binding.launchSites.empty()) {
       LDBG() << "  skipped: no launch site in this translation unit";
       remarkSkipped(anchorOf(binding), kernelName,
@@ -528,23 +571,8 @@ void OffloadPointerFactsPass::runOnOperation() {
       ++numKernelsSkipped;
       continue;
     }
-    if (!table.allLaunchSitesVisible(kernelName)) {
-      LDBG() << "  skipped: launch sites not all visible";
-      remarkSkipped(anchorOf(binding), kernelName,
-                    "launch sites not all visible",
-                    binding.launchSites.size());
-      ++numKernelsSkipped;
-      continue;
-    }
 
-    std::string reason;
-    bool kernelOk = true;
-    for (cir::FuncOp kernel : binding.deviceKernels)
-      if (!bodyAllowsNoalias(kernel)) {
-        kernelOk = false;
-        break;
-      }
-    if (!kernelOk) {
+    if (!llvm::all_of(binding.deviceKernels, bodyAllowsNoalias)) {
       LDBG() << "  skipped: kernel body has a drop-table violation";
       remarkSkipped(anchorOf(binding), kernelName,
                     "kernel body has a drop-table violation",
@@ -559,47 +587,17 @@ void OffloadPointerFactsPass::runOnOperation() {
     for (unsigned i = 0; i != numArgs; ++i)
       isPointer[i] = mlir::isa<cir::PointerType>(stub.getArgument(i).getType());
 
-    // Meet across every launch: all pointer arguments must be provable and
-    // pairwise distinct at every site, or the kernel gets no annotations.
+    // Each launch is decided on its own.
+    std::string reason;
+    llvm::SmallVector<cir::LaunchSite> provenSites;
     for (const cir::LaunchSite &site : binding.launchSites) {
-      llvm::SmallVector<SlotRoot> roots(numArgs);
-      for (unsigned i = 0; i != numArgs && kernelOk; ++i) {
-        if (!isPointer[i])
-          continue;
-        SlotRoot root;
-        cir::CallOp launchCall = site.stubCall;
-        if (!resolveValueToRoot(site.getArg(i), root, dom, 0)) {
-          kernelOk = false;
-          reason = "no allocation root for pointer argument " + std::to_string(i);
-          break;
-        }
-        if (allocationFreed(root.malloc, root.slot, launchCall.getOperation(),
-                            dom)) {
-          kernelOk = false;
-          reason = "allocation freed before the launch for pointer argument " +
-                   std::to_string(i);
-          break;
-        }
-        roots[i] = root;
-      }
-      if (!kernelOk)
-        break;
-
-      for (unsigned i = 0; i != numArgs && kernelOk; ++i) {
-        if (!isPointer[i])
-          continue;
-        for (unsigned j = i + 1; j != numArgs; ++j) {
-          if (!isPointer[j])
-            continue;
-          if (roots[i].malloc == roots[j].malloc) {
-            kernelOk = false;
-            reason = "repeated allocation root across pointer arguments";
-            break;
-          }
-        }
-      }
+      std::string siteReason;
+      if (launchHasDistinctRoots(site, isPointer, dom, siteReason))
+        provenSites.push_back(site);
+      else if (reason.empty())
+        reason = siteReason;
     }
-    if (!kernelOk) {
+    if (provenSites.empty()) {
       LDBG() << "  skipped: " << reason;
       remarkSkipped(anchorOf(binding), kernelName, reason,
                     binding.launchSites.size());
@@ -607,8 +605,42 @@ void OffloadPointerFactsPass::runOnOperation() {
       continue;
     }
 
-    // In-place attachment on the existing kernel parameters; no clones.
-    for (cir::FuncOp kernel : binding.deviceKernels) {
+    // When every launch is visible and proven, annotate the kernel itself.
+    // Otherwise the original keeps serving the other launches, and the proven
+    // ones are redirected to an internal copy that carries the facts.
+    llvm::SmallVector<cir::FuncOp, 2> targets(binding.deviceKernels.begin(),
+                                              binding.deviceKernels.end());
+    if (!table.allLaunchSitesVisible(kernelName) ||
+        provenSites.size() != binding.launchSites.size()) {
+      cir::SpecializationTarget target = cir::getSpecializationTarget(
+          container, binding, "__noalias", provenSites);
+      if (!target) {
+        LDBG() << "  skipped: kernel cannot be cloned";
+        remarkSkipped(anchorOf(binding), kernelName,
+                      "kernel cannot be cloned for its proven launches",
+                      binding.launchSites.size());
+        ++numKernelsSkipped;
+        continue;
+      }
+      if (target.cloned) {
+        makeInternal(target.hostStub);
+        auto cloneName =
+            target.hostStub->getAttrOfType<cir::CUDAKernelNameAttr>(
+                cir::CUDAKernelNameAttr::getMnemonic());
+        if (auto handle = mlir::dyn_cast_or_null<cir::GlobalOp>(
+                cir::getOffloadContainerHostModule(container).lookupSymbol(
+                    cloneName.getKernelName()))) {
+          handle.setLinkage(cir::GlobalLinkageKind::InternalLinkage);
+          handle.setSymVisibility("private");
+        }
+        LDBG() << "  cloned for " << provenSites.size() << " of "
+               << binding.launchSites.size() << " launch site(s)";
+        changed = true;
+      }
+      targets.assign(target.deviceKernels.begin(), target.deviceKernels.end());
+    }
+
+    for (cir::FuncOp kernel : targets) {
       unsigned stamped = 0;
       for (unsigned i = 0; i != numArgs && i < kernel.getNumArguments(); ++i) {
         if (!isPointer[i] ||
@@ -622,7 +654,7 @@ void OffloadPointerFactsPass::runOnOperation() {
       if (stamped) {
         LDBG() << "  '" << kernel.getSymName() << "': stamped " << stamped
                << " pointer parameter(s)";
-        remarkStamped(kernel, kernelName, stamped, binding.launchSites.size());
+        remarkStamped(kernel, kernelName, stamped, provenSites.size());
         ++numKernelsNoalias;
         numParamsNoalias += stamped;
       }

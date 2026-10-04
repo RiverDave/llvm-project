@@ -1,0 +1,176 @@
+// RUN: cir-opt %s -split-input-file \
+// RUN:   -pass-pipeline="builtin.module(cir-offload-pointer-facts)" | FileCheck %s
+
+// An exported kernel may be launched from elsewhere, so the proven launch is
+// redirected to an internal copy of the stub and the copy of the kernel
+// carries the facts. The copy launches through its own address.
+// CHECK-LABEL: cir.func @stub(
+// CHECK:         cir.get_global @stub :
+// CHECK-LABEL: cir.func internal private @stub__noalias(
+// CHECK-SAME:    cu.kernel_name = #cir.cu.kernel_name<"k__noalias">
+// CHECK:         cir.get_global @stub__noalias :
+// CHECK-LABEL: cir.func @launch(
+// CHECK:         cir.call @stub__noalias({{.*}}) {cu.kernel_name = #cir.cu.kernel_name<"k__noalias">}
+// CHECK:       cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK:       cir.func @k__noalias(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func private @cudaLaunchKernel(!cir.ptr<!void>) -> !s32i
+    cir.func @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      %self = cir.get_global @stub : !cir.ptr<!cir.func<(!cir.ptr<!cir.float>, !cir.ptr<!cir.float>)>>
+      %h = cir.cast bitcast %self : !cir.ptr<!cir.func<(!cir.ptr<!cir.float>, !cir.ptr<!cir.float>)>> -> !cir.ptr<!void>
+      %r = cir.call @cudaLaunchKernel(%h) : (!cir.ptr<!void>) -> !s32i
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %x0 = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %y0 = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%x0, %y0) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// Launches are decided one by one: the aliasing launch stays on the original
+// kernel and only the proven one moves to the copy.
+// CHECK-LABEL: cir.func @launch(
+// CHECK:         cir.call @stub__noalias(
+// CHECK:         cir.call @stub(
+// CHECK:       cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK:       cir.func @k__noalias(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func private @cudaLaunchKernel(!cir.ptr<!void>) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      %self = cir.get_global @stub : !cir.ptr<!cir.func<(!cir.ptr<!cir.float>, !cir.ptr<!cir.float>)>>
+      %h = cir.cast bitcast %self : !cir.ptr<!cir.func<(!cir.ptr<!cir.float>, !cir.ptr<!cir.float>)>> -> !cir.ptr<!void>
+      %r = cir.call @cudaLaunchKernel(%h) : (!cir.ptr<!void>) -> !s32i
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %x0 = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %y0 = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%x0, %y0) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      %x1 = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %y1 = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%x1, %y1) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// An exported kernel with no proven launch is not copied.
+// CHECK-LABEL: cir.func @launch(
+// CHECK:         cir.call @stub(
+// CHECK:       cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-NOT:   __noalias
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func private @cudaLaunchKernel(!cir.ptr<!void>) -> !s32i
+    cir.func @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      %self = cir.get_global @stub : !cir.ptr<!cir.func<(!cir.ptr<!cir.float>, !cir.ptr<!cir.float>)>>
+      %h = cir.cast bitcast %self : !cir.ptr<!cir.func<(!cir.ptr<!cir.float>, !cir.ptr<!cir.float>)>> -> !cir.ptr<!void>
+      %r = cir.call @cudaLaunchKernel(%h) : (!cir.ptr<!void>) -> !s32i
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %x0 = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %y0 = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%x0, %y0) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// Every launch visible and proven: annotate in place, no copy.
+// CHECK-LABEL: cir.func @launch(
+// CHECK:         cir.call @stub(
+// CHECK:       cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK-NOT:   __noalias
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func private @cudaLaunchKernel(!cir.ptr<!void>) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      %self = cir.get_global @stub : !cir.ptr<!cir.func<(!cir.ptr<!cir.float>, !cir.ptr<!cir.float>)>>
+      %h = cir.cast bitcast %self : !cir.ptr<!cir.func<(!cir.ptr<!cir.float>, !cir.ptr<!cir.float>)>> -> !cir.ptr<!void>
+      %r = cir.call @cudaLaunchKernel(%h) : (!cir.ptr<!void>) -> !s32i
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %x0 = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %y0 = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%x0, %y0) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      cir.return
+    }
+  }
+}
