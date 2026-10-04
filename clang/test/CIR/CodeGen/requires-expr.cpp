@@ -13,6 +13,10 @@ template <typename T> void summable(T a) {
 
 // CIR: %[[A_ADDR:.*]] = cir.alloca "a" {{.*}} init : !cir.ptr<!s32i>
 // CIR: cir.store %[[ARG_A:.*]], %[[A_ADDR]] : !s32i, !cir.ptr<!s32i>
+// The constant-condition branch is folded away by the CIR pipeline's
+// canonicalize step, which runs before -emit-cir prints, so the guarded body
+// appears directly inside the scope. The LLVM checks below show the same
+// effect on the lowered control flow.
 // CIR: cir.scope {
 // CIR:   %[[B_ADDR:.*]] = cir.alloca "b" {{.*}} init : !cir.ptr<!s32i>
 // CIR:   %[[TMP_A_1:.*]] = cir.load {{.*}} %[[A_ADDR]] : !cir.ptr<!s32i>, !s32i
@@ -20,6 +24,7 @@ template <typename T> void summable(T a) {
 // CIR:   %[[RESULT:.*]] = cir.add nsw %[[TMP_A_1]], %[[TMP_A_2]] : !s32i
 // CIR:   cir.store {{.*}} %[[RESULT]], %[[B_ADDR]] : !s32i, !cir.ptr<!s32i>
 // CIR: }
+// CIR-NOT: cir.const #true
 
 // LLVM: %[[A_ADDR:.*]] = alloca i32, align 4
 // LLVM: %[[B_ADDR:.*]] = alloca i32, align 4
@@ -28,6 +33,7 @@ template <typename T> void summable(T a) {
 // LLVM: %[[TMP_A_2:.*]] = load i32, ptr %[[A_ADDR]], align 4
 // LLVM: %[[RESULT:.*]] = add nsw i32 %[[TMP_A_1]], %[[TMP_A_2]]
 // LLVM: store i32 %[[RESULT]], ptr %[[B_ADDR]], align 4
+// LLVM-NOT: br i1 true
 
 void call_function_with_requires_expr() { summable(1); }
 
