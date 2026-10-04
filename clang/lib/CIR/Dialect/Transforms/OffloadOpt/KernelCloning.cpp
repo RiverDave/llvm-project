@@ -89,12 +89,14 @@ std::optional<cir::KernelClone> cir::cloneKernelForSites(
     return std::nullopt;
   llvm::StringRef oldKernelName = kernelNameAttr.getKernelName();
 
-  // The stub must launch through its handle; without that read there is no way
-  // to make the copy launch the copied kernel.
+  // The stub must name what it launches; without that read there is no way to
+  // make the copy launch the copied kernel. HIP launches through a handle
+  // global named like the kernel, CUDA through the stub's own address.
   cir::GetGlobalOp handleRead = findHandleRead(stub, oldKernelName);
   auto handle = mlir::dyn_cast_or_null<cir::GlobalOp>(
       hostModule.lookupSymbol(oldKernelName));
-  if (!handleRead || !handle)
+  bool launchesThroughHandle = handleRead && handle;
+  if (!launchesThroughHandle && !findHandleRead(stub, stub.getSymName()))
     return std::nullopt;
 
   cir::KernelClone clone;
@@ -121,10 +123,10 @@ std::optional<cir::KernelClone> cir::cloneKernelForSites(
   if (clone.deviceKernels.empty())
     return std::nullopt;
 
-  // Host side: copy the stub, rebind it to the cloned kernel, and give it a
-  // handle global of its own. `LoweringPrepare` emits the registration by
-  // looking up a GlobalOp named exactly like `cu.kernel_name`, so the handle
-  // has to exist under that name or registration will fail on the cast.
+  // Host side: copy the stub and rebind it to the cloned kernel.
+  // `LoweringPrepare` registers every stub carrying `cu.kernel_name`; under HIP
+  // it also looks up a GlobalOp named exactly like that attribute, so the copy
+  // needs a handle of its own or registration will fail on the cast.
   auto newStub = mlir::cast<cir::FuncOp>(stub->clone());
   mlir::SymbolTable::setSymbolName(newStub, newStubName);
   newStub->setAttr(cir::CUDAKernelNameAttr::getMnemonic(), newKernelNameAttr);
@@ -133,15 +135,23 @@ std::optional<cir::KernelClone> cir::cloneKernelForSites(
   newStub->moveAfter(stub);
   clone.hostStub = newStub;
 
-  // Point the copy's handle read at the copy's handle.
-  if (cir::GetGlobalOp copiedRead = findHandleRead(newStub, oldKernelName))
-    copiedRead.setName(clone.kernelName);
+  if (launchesThroughHandle) {
+    // Point the copy's handle read at the copy's handle.
+    if (cir::GetGlobalOp copiedRead = findHandleRead(newStub, oldKernelName))
+      copiedRead.setName(clone.kernelName);
 
-  mlir::OpBuilder builder(handle);
-  auto newHandle = mlir::cast<cir::GlobalOp>(builder.clone(*handle));
-  mlir::SymbolTable::setSymbolName(newHandle, clone.kernelName);
-  newHandle.setInitialValueAttr(cir::GlobalViewAttr::get(
-      newHandle.getSymType(), mlir::FlatSymbolRefAttr::get(ctx, newStubName)));
+    mlir::OpBuilder builder(handle);
+    auto newHandle = mlir::cast<cir::GlobalOp>(builder.clone(*handle));
+    mlir::SymbolTable::setSymbolName(newHandle, clone.kernelName);
+    newHandle.setInitialValueAttr(cir::GlobalViewAttr::get(
+        newHandle.getSymType(),
+        mlir::FlatSymbolRefAttr::get(ctx, newStubName)));
+  } else if (cir::GetGlobalOp selfRead =
+                 findHandleRead(newStub, stub.getSymName())) {
+    // The copy must launch through its own address, which is what its
+    // registration maps to the copied kernel.
+    selfRead.setName(newStubName);
+  }
 
   // Retarget the requested launches. The callee and the `cu.kernel_name` on
   // the call have to move together: KernelBindingTable reads the attribute to

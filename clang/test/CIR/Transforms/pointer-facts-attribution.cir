@@ -44,7 +44,8 @@ module attributes {cir.offload.container} {
       cir.return
     }
 
-    // Skipped: exported stub, so other TUs may launch it.
+    // Skipped: exported stub, so other TUs may launch it, and the stub reads
+    // no kernel handle the launch could be cloned through.
     cir.func @stub_external(%arg0: !pf32) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_external">} {
       cir.return
     }
@@ -108,7 +109,7 @@ module attributes {cir.offload.container} {
 
 // Each rejection reason is distinguishable in the remark stream.
 // REMARK-DAG: remark: [Passed] OffloadPointerFacts | Category:cir-offload-noalias | Function=kern_ok | {{.*}}launchSites=1, pointerParams=1
-// REMARK-DAG: remark: [Missed] OffloadPointerFacts | Category:cir-offload-noalias | Function=kern_external | {{.*}}Reason="launch sites not all visible"
+// REMARK-DAG: remark: [Missed] OffloadPointerFacts | Category:cir-offload-noalias | Function=kern_external | {{.*}}Reason="kernel cannot be cloned for its proven launches"
 // REMARK-DAG: remark: [Missed] OffloadPointerFacts | Category:cir-offload-noalias | Function=kern_nolaunch | {{.*}}Reason="no launch site in this translation unit"
 // REMARK-DAG: remark: [Passed] OffloadPointerFacts | Category:cir-offload-noalias | Function=kern_unchecked | {{.*}}launchSites=1, pointerParams=1
 
