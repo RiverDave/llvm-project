@@ -112,6 +112,7 @@ runCIRToCIRPasses(mlir::ModuleOp theModule, mlir::MLIRContext &mlirContext,
   // CallConvLowering so the classifier sees them, otherwise their signatures
   // go unclassified and caller and callee disagree on the ABI.
   pm.addPass(mlir::createLoweringPreparePass(&astContext));
+  pm.addPass(mlir::createCUDARegisterModulePass());
 
   if (enableCallConvLowering) {
     // CallConvLowering rewrites signatures and call sites using the classifier,
