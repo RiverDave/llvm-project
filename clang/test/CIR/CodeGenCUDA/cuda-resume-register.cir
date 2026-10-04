@@ -5,18 +5,25 @@
 // came out of CIRGen already carries it. A .cir input never runs CIRGen, so
 // without an explicit attach the module reaches lowering with no binary at all.
 //
-// Note: the CUDA module registration is not emitted on this path yet --
-// LoweringPrepare gates it on the live LangOpts.CUDA, which `-x cir` does not
-// set. This test covers the attribute only.
+// LoweringPrepare ran before the module was serialized, when no binary existed
+// yet, so lowering a resumed host module emits the kernel registration then.
+// The CUDA language options come from the module's serialized
+// #cir.lowering_lang_options; constructors the first run recorded are kept.
 
+// RUN: rm -rf %t && split-file %s %t
 // RUN: echo -n "GPU binary would be here." > %t.fatbin
 // RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-cir \
-// RUN:   -foffload-include-binary %t.fatbin %s -o - \
+// RUN:   -foffload-include-binary %t.fatbin %t/attach.cir -o - \
 // RUN:   | FileCheck %s --check-prefix=ATTR
 
-// RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-cir %s -o - \
-// RUN:   | FileCheck %s --check-prefix=NOATTR
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -x cir -emit-cir %t/attach.cir \
+// RUN:   -o - | FileCheck %s --check-prefix=NOATTR
 
+// RUN: %clang_cc1 -triple x86_64-linux-gnu -fclangir -x cir -emit-llvm \
+// RUN:   -foffload-include-binary %t.fatbin %t/host.cir -o - \
+// RUN:   | FileCheck %s --check-prefix=REG
+
+//--- attach.cir
 module attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
   cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
     cir.return
@@ -28,3 +35,16 @@ module attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
 // ATTR: cir.cu.device_binary = "GPU binary would be here." : !cir.array<!u8i x 25>
 
 // NOATTR-NOT: cir.cu.device_binary
+
+// REG: @llvm.global_ctors = appending global [2 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @_GLOBAL__sub_I_host, ptr null }, { i32, ptr, ptr } { i32 65535, ptr @__cuda_module_ctor, ptr null }]
+// REG: call i32 @__cudaRegisterFunction(ptr %{{.*}}, ptr @_Z21__device_stub__kernelv, ptr @{{.*}}_Z6kernelv, ptr @{{.*}}_Z6kernelv,
+
+//--- host.cir
+module attributes {cir.triple = "x86_64-unknown-linux-gnu", cir.lowering_lang_options = #cir.lowering_lang_options<exceptions = true, threadsafe_statics = true, cuda = true, cuda_is_device = false, hip = false, gpu_rdc = false, openmp = false, openmp_is_target_device = false, clang_abi_compat = 16>, cir.global_ctors = [#cir.global_ctor<"_GLOBAL__sub_I_host", 65535>]} {
+  cir.func internal private @_GLOBAL__sub_I_host() {
+    cir.return
+  }
+  cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
+    cir.return
+  }
+}

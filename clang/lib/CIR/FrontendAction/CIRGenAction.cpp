@@ -10,6 +10,7 @@
 #include "CIRDiagnosticHandler.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/Pass/PassManager.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/Basic/DiagnosticCodeGen.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -25,6 +26,7 @@
 #include "clang/CIR/CIRGenerator.h"
 #include "clang/CIR/CIRToCIRPasses.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
+#include "clang/CIR/Dialect/Passes.h"
 #include "clang/CIR/Dialect/OpenMP/RegisterOpenMPExtensions.h"
 #include "clang/CIR/LowerToLLVM.h"
 #include "clang/CodeGen/BackendUtil.h"
@@ -486,6 +488,18 @@ void CIRGenAction::ExecuteAction() {
     Flags.enableDebugInfo(/*enable=*/true, /*prettyForm=*/false);
     MLIRMod->print(*OS, Flags);
     return;
+  }
+
+  // The module was serialized before the device binary existed, so the kernel
+  // registration could not be built then.
+  if (MLIRMod->getOperation()->getAttr(
+          cir::CIRDialect::getCUDADeviceBinaryAttrName())) {
+    mlir::PassManager pm(MLIRCtx);
+    pm.addPass(mlir::createCUDARegisterModulePass());
+    if (mlir::failed(pm.run(*MLIRMod))) {
+      reportError(CI, "failed to emit the CUDA registration");
+      return;
+    }
   }
 
   std::string mlirSaveTempsOutFile;

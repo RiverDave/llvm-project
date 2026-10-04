@@ -184,6 +184,20 @@ def LoweringPrepare : Pass<"cir-lowering-prepare", "mlir::ModuleOp"> {
   let dependentDialects = ["cir::CIRDialect"];
 }
 
+def CUDARegisterModule : Pass<"cir-cuda-register-module", "mlir::ModuleOp"> {
+  let summary = "Register a host module's kernels and device variables with "
+    "the CUDA/HIP runtime";
+  let description = [{
+    Builds `__{cuda|hip}_module_ctor`, which registers the device binary,
+    every function carrying `cu.kernel_name` and every global carrying
+    `cu.var_registration`, and appends it to `cir.global_ctors`. Runs on host
+    modules after LoweringPrepare, in-process and on a module resumed from
+    .cir, since the device binary may only exist by then.
+  }];
+  let constructor = "mlir::createCUDARegisterModulePass()";
+  let dependentDialects = ["cir::CIRDialect"];
+}
+
 def IdiomRecognizer : Pass<"cir-idiom-recognizer", "mlir::ModuleOp"> {
   let summary = "Raise calls to C/C++ libraries to CIR operations";
   let description = [{

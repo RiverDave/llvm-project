@@ -6,6 +6,7 @@ add_clang_library(MLIRCIRTransforms
   CIRCanonicalize.cpp
   CIRSimplify.cpp
   CIRTransformUtils.cpp
+  CUDARegistration.cpp
   CXXABILowering.cpp
   EHABILowering.cpp
   TargetLowering.cpp

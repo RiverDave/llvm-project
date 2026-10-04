@@ -1,0 +1,46 @@
+// RUN: cir-opt %s -split-input-file -cir-cuda-register-module | FileCheck %s
+
+// A host module with a device binary gets a module ctor registering the
+// binary and its kernels, appended after the ctors already on the module.
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME:    cir.global_ctors = [#cir.global_ctor<"_GLOBAL__sub_I_host", 65535>, #cir.global_ctor<"__cuda_module_ctor", 65535>]
+// CHECK-NOT:     cir.cu.device_binary
+// CHECK:         cir.func {{.*}}@__cuda_register_globals(
+// CHECK:           cir.call @__cudaRegisterFunction({{.*}})
+// CHECK:         cir.func {{.*}}@__cuda_module_ctor()
+!u8i = !cir.int<u, 8>
+module attributes {cir.triple = "x86_64-unknown-linux-gnu", cir.lowering_lang_options = #cir.lowering_lang_options<exceptions = true, threadsafe_statics = true, cuda = true, cuda_is_device = false, hip = false, gpu_rdc = false, openmp = false, openmp_is_target_device = false, clang_abi_compat = 16>, cir.cu.device_binary = "GPU binary would be here." : !cir.array<!u8i x 25>, cir.global_ctors = [#cir.global_ctor<"_GLOBAL__sub_I_host", 65535>]} {
+  cir.func internal private @_GLOBAL__sub_I_host() {
+    cir.return
+  }
+  cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
+    cir.return
+  }
+}
+
+// -----
+
+// Without a device binary there is nothing to register yet.
+
+// CHECK-LABEL: module attributes
+// CHECK-NOT:     __cuda_module_ctor
+// CHECK-NOT:     __cudaRegisterFunction
+module attributes {cir.triple = "x86_64-unknown-linux-gnu", cir.lowering_lang_options = #cir.lowering_lang_options<exceptions = true, threadsafe_statics = true, cuda = true, cuda_is_device = false, hip = false, gpu_rdc = false, openmp = false, openmp_is_target_device = false, clang_abi_compat = 16>} {
+  cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
+    cir.return
+  }
+}
+
+// -----
+
+// Device modules are not registered.
+
+// CHECK-LABEL: module attributes
+// CHECK-NOT:     __cuda_module_ctor
+!u8i = !cir.int<u, 8>
+module attributes {cir.triple = "nvptx64-nvidia-cuda", cir.lowering_lang_options = #cir.lowering_lang_options<exceptions = true, threadsafe_statics = true, cuda = true, cuda_is_device = true, hip = false, gpu_rdc = false, openmp = false, openmp_is_target_device = false, clang_abi_compat = 16>, cir.cu.device_binary = "x" : !cir.array<!u8i x 1>} {
+  cir.func @_Z21__device_stub__kernelv() attributes {cu.kernel_name = #cir.cu.kernel_name<"_Z6kernelv">} {
+    cir.return
+  }
+}
