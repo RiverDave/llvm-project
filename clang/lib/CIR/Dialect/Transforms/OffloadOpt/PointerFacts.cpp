@@ -15,9 +15,15 @@
 // Device side: every pointer in the kernel and its callees must come from a
 // known source, so a buffer is reached only through its parameter.
 //
-// llvm.noalias is the only fact today. It is stamped when every visible launch
-// passes pointers with distinct roots and the device side holds; otherwise the
-// kernel gets no facts.
+// llvm.noalias is stamped when the selected launches pass pointers with
+// distinct roots and the device side holds. If all launches are known and
+// proven, the kernel is annotated in place; otherwise a clone serves only the
+// proven launches, leaving the original kernel unchanged.
+//
+// Separately, `llvm.align` is stamped on a pointer parameter when every launch
+// a kernel serves passes a pointer the CUDA runtime allocated, which it aligns
+// to at least 256 bytes. That fact depends only on the passed value, so it
+// needs neither the body check nor distinct roots.
 //
 //===----------------------------------------------------------------------===//
 
@@ -432,6 +438,37 @@ static bool resolveValueToRoot(Value v, SlotRoot &out, DominanceInfo &dom,
   return false;
 }
 
+// Whether `v` was read from a variable that only ever holds cudaMalloc
+// results: every write to it is a cudaMalloc, a null store, or a copy of
+// another such variable. The runtime aligns allocations to at least 256 bytes
+// and null is aligned, so `v` is aligned whichever write reached it, including
+// when a cudaMalloc failed and left an earlier value in place.
+static bool holdsMallocAlignedPtr(Value v, unsigned depth) {
+  if (!v || depth > 8)
+    return false;
+  auto load = cir::getUnderlyingObject(v).getDefiningOp<cir::LoadOp>();
+  if (!load)
+    return false;
+  Value addr = cir::getUnderlyingObject(load.getAddr());
+  if (!addr.getDefiningOp<cir::AllocaOp>())
+    return false;
+
+  llvm::SmallPtrSet<Value, 8> family;
+  collectSlotFamily(addr, family);
+  llvm::SmallVector<Operation *, 4> devPtrWriters;
+  if (!classifyDevPtrWriters(family, devPtrWriters) || devPtrWriters.empty())
+    return false;
+  return llvm::all_of(devPtrWriters, [&](Operation *w) {
+    auto store = mlir::dyn_cast<cir::StoreOp>(w);
+    if (!store)
+      return true; // cudaMalloc.
+    if (auto c = store.getValue().getDefiningOp<cir::ConstantOp>())
+      if (auto ptr = mlir::dyn_cast<cir::ConstPtrAttr>(c.getValue()))
+        return ptr.isNullValue();
+    return holdsMallocAlignedPtr(store.getValue(), depth + 1);
+  });
+}
+
 // Whether `a` runs after `b`: compares their ancestors in the closest block
 // that holds both. Ops in different regions of the same op are unordered.
 static bool isAfterInProgramOrder(Operation *a, Operation *b) {
@@ -532,6 +569,41 @@ static void makeInternal(cir::FuncOp fn) {
   fn.setSymVisibility("private");
 }
 
+// The alignment the CUDA runtime guarantees for its allocations.
+static constexpr int64_t kCudaMallocAlign = 256;
+
+// Stamps `llvm.align` on each pointer parameter of `kernel` whose argument is
+// malloc-aligned at every one of `sites`. Returns the number stamped.
+static unsigned stampAlignment(cir::FuncOp kernel,
+                               llvm::ArrayRef<bool> isPointer,
+                               llvm::ArrayRef<cir::LaunchSite> sites) {
+  llvm::StringRef alignName = mlir::LLVM::LLVMDialect::getAlignAttrName();
+  unsigned stamped = 0;
+  for (unsigned i = 0; i != isPointer.size() && i < kernel.getNumArguments();
+       ++i) {
+    if (!isPointer[i] ||
+        !mlir::isa<cir::PointerType>(kernel.getArgument(i).getType()))
+      continue;
+    if (!llvm::all_of(sites, [&](const cir::LaunchSite &site) {
+          return holdsMallocAlignedPtr(site.getArg(i), 0);
+        }))
+      continue;
+    if (auto existing =
+            kernel.getArgAttrOfType<mlir::IntegerAttr>(i, alignName))
+      if (existing.getInt() >= kCudaMallocAlign)
+        continue;
+    kernel.setArgAttr(
+        i, alignName,
+        mlir::IntegerAttr::get(mlir::IntegerType::get(kernel.getContext(), 64),
+                               kCudaMallocAlign));
+    ++stamped;
+  }
+  if (stamped)
+    LDBG() << "  '" << kernel.getSymName() << "': aligned " << stamped
+           << " pointer parameter(s)";
+  return stamped;
+}
+
 struct OffloadPointerFactsPass
     : public impl::OffloadPointerFactsBase<OffloadPointerFactsPass> {
   void runOnOperation() override;
@@ -585,6 +657,23 @@ void OffloadPointerFactsPass::runOnOperation() {
       continue;
     }
 
+    cir::FuncOp stub = binding.hostStub;
+    unsigned numArgs = stub.getNumArguments();
+    llvm::SmallVector<bool> isPointer(numArgs, false);
+    for (unsigned i = 0; i != numArgs; ++i)
+      isPointer[i] = mlir::isa<cir::PointerType>(stub.getArgument(i).getType());
+
+    // Alignment only depends on the passed values, so the original kernel gets
+    // it whenever all of its launches are visible, whatever noalias decides.
+    // Launches later redirected to a clone only make this stricter.
+    if (table.allLaunchSitesVisible(kernelName))
+      for (cir::FuncOp kernel : binding.deviceKernels)
+        if (unsigned n =
+                stampAlignment(kernel, isPointer, binding.launchSites)) {
+          numParamsAligned += n;
+          changed = true;
+        }
+
     if (!llvm::all_of(binding.deviceKernels, bodyAllowsNoalias)) {
       LDBG() << "  skipped: kernel body has a drop-table violation";
       remarkSkipped(anchorOf(binding), kernelName,
@@ -593,12 +682,6 @@ void OffloadPointerFactsPass::runOnOperation() {
       ++numKernelsSkipped;
       continue;
     }
-
-    cir::FuncOp stub = binding.hostStub;
-    unsigned numArgs = stub.getNumArguments();
-    llvm::SmallVector<bool> isPointer(numArgs, false);
-    for (unsigned i = 0; i != numArgs; ++i)
-      isPointer[i] = mlir::isa<cir::PointerType>(stub.getArgument(i).getType());
 
     // Each launch is decided on its own.
     std::string reason;
@@ -649,6 +732,8 @@ void OffloadPointerFactsPass::runOnOperation() {
         LDBG() << "  cloned for " << provenSites.size() << " of "
                << binding.launchSites.size() << " launch site(s)";
         changed = true;
+        for (cir::FuncOp kernel : target.deviceKernels)
+          numParamsAligned += stampAlignment(kernel, isPointer, provenSites);
       }
       targets.assign(target.deviceKernels.begin(), target.deviceKernels.end());
     }

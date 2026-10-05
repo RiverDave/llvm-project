@@ -1,0 +1,210 @@
+// RUN: cir-opt %s -split-input-file \
+// RUN:   -pass-pipeline="builtin.module(cir-offload-pointer-facts)" | FileCheck %s
+
+// The CUDA runtime aligns its allocations to at least 256 bytes. A parameter is
+// aligned when every launch passes a variable whose every write is a
+// cudaMalloc, null, or a copy of another such variable.
+
+// A misaligned value written before the malloc would survive a failed cudaMalloc,
+// so `a` is not aligned. Noalias still holds: the malloc is the reaching write.
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
+!s32i = !cir.int<s, 32>
+!s64i = !cir.int<s, 64>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!void>>
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!ppv, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch(%host: !pf) {
+      %a = cir.alloca "a" align(8) : !ppf
+      %b = cir.alloca "b" align(8) : !ppf
+      %c = cir.alloca "c" align(8) : !ppf
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !ppf -> !ppv
+      %cb = cir.cast bitcast %b : !ppf -> !ppv
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64i) -> !s32i
+      %bv = cir.load %b : !ppf, !pf
+      %one = cir.const #cir.int<1> : !s64i
+      %bp1 = cir.ptr_stride %bv, %one : (!pf, !s64i) -> !pf
+      cir.store %bp1, %a : !pf, !ppf
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64i) -> !s32i
+      %pa = cir.load %a : !ppf, !pf
+      %pb = cir.load %b : !ppf, !pf
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !pf, %arg1: !pf) cc(ptx_kernel) {
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// A null initial value is aligned, so a failed cudaMalloc cannot break the fact.
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
+!s32i = !cir.int<s, 32>
+!s64i = !cir.int<s, 64>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!void>>
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!ppv, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch(%host: !pf) {
+      %a = cir.alloca "a" align(8) : !ppf
+      %b = cir.alloca "b" align(8) : !ppf
+      %c = cir.alloca "c" align(8) : !ppf
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !ppf -> !ppv
+      %cb = cir.cast bitcast %b : !ppf -> !ppv
+      %null = cir.const #cir.ptr<null> : !pf
+      cir.store %null, %a : !pf, !ppf
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64i) -> !s32i
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64i) -> !s32i
+      %pa = cir.load %a : !ppf, !pf
+      %pb = cir.load %b : !ppf, !pf
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !pf, %arg1: !pf) cc(ptx_kernel) {
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// An offset into an allocation is not the allocation's address. Only that
+// parameter loses alignment; noalias needs every pointer argument rooted.
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64})
+!s32i = !cir.int<s, 32>
+!s64i = !cir.int<s, 64>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!void>>
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!ppv, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch(%host: !pf) {
+      %a = cir.alloca "a" align(8) : !ppf
+      %b = cir.alloca "b" align(8) : !ppf
+      %c = cir.alloca "c" align(8) : !ppf
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !ppf -> !ppv
+      %cb = cir.cast bitcast %b : !ppf -> !ppv
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64i) -> !s32i
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64i) -> !s32i
+      %pa = cir.load %a : !ppf, !pf
+      %four = cir.const #cir.int<4> : !s64i
+      %pa4 = cir.ptr_stride %pa, %four : (!pf, !s64i) -> !pf
+      %pb = cir.load %b : !ppf, !pf
+      cir.call @stub(%pa4, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !pf, %arg1: !pf) cc(ptx_kernel) {
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// A copy of an aligned variable is aligned.
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
+!s32i = !cir.int<s, 32>
+!s64i = !cir.int<s, 64>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!void>>
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!ppv, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch(%host: !pf) {
+      %a = cir.alloca "a" align(8) : !ppf
+      %b = cir.alloca "b" align(8) : !ppf
+      %c = cir.alloca "c" align(8) : !ppf
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !ppf -> !ppv
+      %cb = cir.cast bitcast %b : !ppf -> !ppv
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64i) -> !s32i
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64i) -> !s32i
+      %av = cir.load %a : !ppf, !pf
+      cir.store %av, %c : !pf, !ppf
+      %pc = cir.load %c : !ppf, !pf
+      %pb = cir.load %b : !ppf, !pf
+      cir.call @stub(%pc, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !pf, %arg1: !pf) cc(ptx_kernel) {
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// Alignment is decided per parameter: a host pointer of unknown origin only
+// costs its own parameter.
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}, %arg1: !cir.ptr<!cir.float>)
+!s32i = !cir.int<s, 32>
+!s64i = !cir.int<s, 64>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!void>>
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!ppv, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch(%host: !pf) {
+      %a = cir.alloca "a" align(8) : !ppf
+      %b = cir.alloca "b" align(8) : !ppf
+      %c = cir.alloca "c" align(8) : !ppf
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !ppf -> !ppv
+      %cb = cir.cast bitcast %b : !ppf -> !ppv
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64i) -> !s32i
+      %pa = cir.load %a : !ppf, !pf
+      cir.call @stub(%pa, %host) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !pf, %arg1: !pf) cc(ptx_kernel) {
+      cir.return
+    }
+  }
+}

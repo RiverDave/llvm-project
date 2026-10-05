@@ -12,7 +12,7 @@
 // CHECK-LABEL: cir.func @launch(
 // CHECK:         cir.call @stub__noalias({{.*}}) {cu.kernel_name = #cir.cu.kernel_name<"k__noalias">}
 // CHECK:       cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel)
-// CHECK:       cir.func @k__noalias(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK:       cir.func @k__noalias(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void
@@ -50,12 +50,13 @@ module attributes {cir.offload.container} {
 // -----
 
 // Launches are decided one by one: the aliasing launch stays on the original
-// kernel and only the proven one moves to the copy.
+// kernel and only the proven one moves to the copy. Both launches pass
+// allocations, so the original still gets alignment, just not noalias.
 // CHECK-LABEL: cir.func @launch(
 // CHECK:         cir.call @stub__noalias(
 // CHECK:         cir.call @stub(
-// CHECK:       cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel)
-// CHECK:       cir.func @k__noalias(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK:       cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
+// CHECK:       cir.func @k__noalias(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void
@@ -139,7 +140,7 @@ module attributes {cir.offload.container} {
 // Every launch visible and proven: annotate in place, no copy.
 // CHECK-LABEL: cir.func @launch(
 // CHECK:         cir.call @stub(
-// CHECK:       cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK:       cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 // CHECK-NOT:   __noalias
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>

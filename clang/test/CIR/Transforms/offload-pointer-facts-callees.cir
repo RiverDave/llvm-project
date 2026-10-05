@@ -52,7 +52,7 @@ module attributes {cir.offload.container} {
 // -----
 
 // A callee whose body only reads thread geometry keeps the fact.
-// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void
@@ -91,7 +91,7 @@ module attributes {cir.offload.container} {
 // -----
 
 // A libdevice declaration is known not to touch kernel buffers.
-// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void
@@ -213,7 +213,7 @@ module attributes {cir.offload.container} {
 // -----
 
 // A declaration that touches no memory besides its arguments keeps the fact.
-// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void
@@ -329,7 +329,7 @@ module attributes {cir.offload.container} {
 // -----
 
 // A CTA barrier keeps the fact.
-// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void

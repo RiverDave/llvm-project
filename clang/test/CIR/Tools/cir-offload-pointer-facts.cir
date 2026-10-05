@@ -14,7 +14,7 @@
 // checked cudaMalloc staging slot is recognized here and the device kernel's
 // pointer parameter is annotated in place.
 // COMBINED-LABEL: cir.func @k(
-// COMBINED-SAME: !cir.ptr<!cir.float> {llvm.noalias}
+// COMBINED-SAME: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}
 // COMBINED: cc(ptx_kernel)
 
 //--- host.cir

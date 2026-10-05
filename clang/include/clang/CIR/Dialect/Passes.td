@@ -399,13 +399,17 @@ def OffloadPointerFacts
     Each pointer argument of a launch is traced to the offload allocation call
     it comes from. Only CUDA's `cudaMalloc` is recognized today.
 
-    Requires every launch to be visible. If a launch or the kernel body cannot
-    be proven, the kernel gets no facts.
+    When every launch is visible and proven, the kernel is annotated in place.
+    Otherwise, a clone serves only the proven launches and the original kernel
+    is left unchanged.
 
     Facts:
 
-    * `llvm.noalias`: at every launch the pointer arguments come from different
-      allocations, and the kernel reaches a buffer only through its parameter.
+    * `llvm.noalias`: at every selected launch the pointer arguments come from
+      different allocations, and the kernel reaches a buffer only through its
+      parameter.
+    * `llvm.align`: a pointer parameter passed a cudaMalloc result at every
+      launch the kernel serves gets alignment 256, without a body check.
   }];
   let constructor = "mlir::createOffloadPointerFactsPass()";
   let dependentDialects = ["cir::CIRDialect"];
@@ -414,6 +418,8 @@ def OffloadPointerFacts
               "Number of device kernels stamped with at least one llvm.noalias">,
     Statistic<"numParamsNoalias", "num-params-noalias",
               "Number of kernel pointer parameters that received llvm.noalias">,
+    Statistic<"numParamsAligned", "num-params-aligned",
+              "Number of kernel pointer parameters that received llvm.align">,
     Statistic<"numKernelsSkipped", "num-kernels-skipped",
               "Number of kernels that received no launch-derived fact">,
   ];

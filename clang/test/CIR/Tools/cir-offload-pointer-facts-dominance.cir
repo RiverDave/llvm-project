@@ -41,7 +41,7 @@
 // REJECT-SAME: cc(ptx_kernel)
 
 // ACCEPT-LABEL: cir.func @k(
-// ACCEPT-SAME: !cir.ptr<!cir.float> {llvm.noalias}, %{{.*}}: !cir.ptr<!cir.float> {llvm.noalias}
+// ACCEPT-SAME: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %{{.*}}: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}
 
 //--- device.cir
 module @d attributes {cir.triple = "nvptx64-nvidia-cuda"} {

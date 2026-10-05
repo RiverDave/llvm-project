@@ -53,7 +53,7 @@ module attributes {cir.offload.container} {
 // both pointer parameters kernel-wide.
 // CHECK-LABEL: cir.func @kern_two(
 // CHECK: llvm.noalias
-// CHECK: %arg1: !cir.ptr<!cir.float> {llvm.noalias}
+// CHECK: %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void
@@ -338,7 +338,7 @@ module attributes {cir.offload.container} {
 // -----
 
 // The allocation is unchecked: success is not required, so the fact holds.
-// CHECK-LABEL: cir.func @kern_unchecked(%arg0: !cir.ptr<!s32i> {llvm.noalias})
+// CHECK-LABEL: cir.func @kern_unchecked(%arg0: !cir.ptr<!s32i> {llvm.align = 256 : i64, llvm.noalias})
 // CHECK: cc(ptx_kernel)
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
@@ -370,7 +370,7 @@ module attributes {cir.offload.container} {
 
 // The slot is reallocated after the checked allocation: the second allocation
 // reaches the launch and overwrites the first.
-// CHECK-LABEL: cir.func @kern_inval(%arg0: !cir.ptr<!s32i> {llvm.noalias})
+// CHECK-LABEL: cir.func @kern_inval(%arg0: !cir.ptr<!s32i> {llvm.align = 256 : i64, llvm.noalias})
 // CHECK: cc(ptx_kernel)
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>

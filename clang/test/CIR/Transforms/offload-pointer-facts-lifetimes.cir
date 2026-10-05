@@ -6,7 +6,7 @@
 
 // Lifetime markers on the device-pointer variables and a cleanup free nested
 // after the launch (the -O3 CIRGen shape) keep the fact.
-// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void
@@ -149,7 +149,7 @@ module attributes {cir.offload.container} {
 // -----
 
 // A free before the root malloc is replaced by it.
-// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void
@@ -238,7 +238,7 @@ module attributes {cir.offload.container} {
 // -----
 
 // A malloc in the same loop runs again before every launch.
-// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias})
+// CHECK-LABEL: cir.func @k(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias})
 !s32i = !cir.int<s, 32>
 !u64i = !cir.int<u, 64>
 !void = !cir.void
