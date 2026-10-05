@@ -40,8 +40,8 @@ void host() {
 
 // Both pointer parameters resolve to distinct cudaMalloc slots on the only
 // launch site, and the kernel body only reads and writes through them.
-// ENABLED-LABEL: cir.func{{.*}} @_ZL3addPfPKf(%arg0: !cir.ptr<!cir.float> {llvm.noalias
-// ENABLED-SAME: %arg1: !cir.ptr<!cir.float> {llvm.noalias
+// ENABLED-LABEL: cir.func{{.*}} @_ZL3addPfPKf(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias
+// ENABLED-SAME: %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias
 // ENABLED-SAME: cc(ptx_kernel)
 
 // Same module with the pass disabled: the signature keeps only llvm.noundef.

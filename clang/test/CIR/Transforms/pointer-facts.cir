@@ -47,7 +47,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_ok(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_ok(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 
 // -----
 
@@ -119,7 +119,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_meet(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_meet(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 
 // -----
 
@@ -165,7 +165,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_store(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_store(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 
 // -----
 
@@ -176,7 +176,7 @@ module attributes {cir.offload.container} {
 !ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
 
 // Same allocation root for two parameters of one launch: the repeated root
-// suppresses every launch-derived annotation on the kernel.
+// suppresses noalias on the kernel, but both parameters are still aligned.
 module attributes {cir.offload.container} {
   builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
     cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
@@ -207,7 +207,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_dup(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_dup(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}, %arg1: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
 // CHECK-NOT: llvm.noalias
 
 // -----
@@ -379,7 +379,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_unchecked(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_unchecked(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 
 // -----
 
@@ -422,7 +422,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_freed(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_freed(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
 // CHECK-NOT: llvm.noalias
 
 // -----
@@ -434,7 +434,7 @@ module attributes {cir.offload.container} {
 !ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
 
 // A kernel pointer parameter forwarded to an unknown callee: the callee body is
-// not inspected, so forwarding itself drops every annotation.
+// not inspected, so forwarding itself drops noalias.
 module attributes {cir.offload.container} {
   builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
     cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
@@ -465,7 +465,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_unknown(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_unknown(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
 // CHECK-NOT: llvm.noalias
 
 // -----
@@ -477,7 +477,7 @@ module attributes {cir.offload.container} {
 !ppvoid = !cir.ptr<!cir.ptr<!cir.void>>
 
 // A kernel pointer parameter forwarded to a visible wrapper: even a visible
-// body is not inspected, so forwarding itself drops every annotation.
+// body is not inspected, so forwarding itself drops noalias.
 module attributes {cir.offload.container} {
   builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
     cir.func private @cudaMalloc(!ppvoid, !u64i) -> !s32i
@@ -510,7 +510,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_wrapper(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_wrapper(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
 // CHECK-NOT: llvm.noalias
 
 // -----
@@ -554,7 +554,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_global(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_global(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
 // CHECK-NOT: llvm.noalias
 
 // -----
@@ -597,7 +597,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_free(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_free(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
 // CHECK-NOT: llvm.noalias
 
 // -----
@@ -681,7 +681,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_launder(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_launder(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
 // CHECK-NOT: llvm.noalias
 
 // -----
@@ -726,7 +726,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_derived(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_derived(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
 // CHECK-NOT: llvm.noalias
 
 // -----
@@ -770,7 +770,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_ptrload(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_ptrload(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64}) cc(ptx_kernel)
 // CHECK-NOT: llvm.noalias
 
 // -----
@@ -814,7 +814,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_freeafter(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_freeafter(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 
 // -----
 
@@ -855,7 +855,7 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_eq(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_eq(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 
 // -----
 
@@ -897,4 +897,4 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_mixed(%arg0: !cir.ptr<!cir.float> {llvm.noalias}, %arg1: !s32i) cc(ptx_kernel)
+// CHECK-LABEL: cir.func @kern_mixed(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}, %arg1: !s32i) cc(ptx_kernel)

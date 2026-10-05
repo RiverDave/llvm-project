@@ -404,7 +404,8 @@ def OffloadPointerFacts
     The proof is kernel-wide and conservative: a repeated allocation root, an
     unprovable argument, or an unprovable body path drops every launch-derived
     fact for that kernel. No clones are created and no diagnostics are
-    emitted. Today the only fact stated is `llvm.noalias`.
+    emitted. Besides `llvm.noalias`, pointer parameters whose every launch
+    passes a cudaMalloc result get `llvm.align` 256, which needs no body check.
   }];
   let constructor = "mlir::createOffloadPointerFactsPass()";
   let dependentDialects = ["cir::CIRDialect"];
@@ -413,6 +414,8 @@ def OffloadPointerFacts
               "Number of device kernels stamped with at least one llvm.noalias">,
     Statistic<"numParamsNoalias", "num-params-noalias",
               "Number of kernel pointer parameters that received llvm.noalias">,
+    Statistic<"numParamsAligned", "num-params-aligned",
+              "Number of kernel pointer parameters that received llvm.align">,
     Statistic<"numKernelsSkipped", "num-kernels-skipped",
               "Number of kernels that received no launch-derived fact">,
   ];

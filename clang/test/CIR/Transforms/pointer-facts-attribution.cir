@@ -115,7 +115,7 @@ module attributes {cir.offload.container} {
 
 // The two proven kernels carry the attribute; the skipped signatures match
 // without one.
-// IR: cir.func @kern_ok(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// IR: cir.func @kern_ok(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
 // IR: cir.func @kern_external(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
 // IR: cir.func @kern_nolaunch(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
-// IR: cir.func @kern_unchecked(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
+// IR: cir.func @kern_unchecked(%arg0: !cir.ptr<!cir.float> {llvm.align = 256 : i64, llvm.noalias}) cc(ptx_kernel)
