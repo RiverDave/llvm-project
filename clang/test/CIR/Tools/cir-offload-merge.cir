@@ -59,6 +59,20 @@
 
 // SPLIT-COMPATIBLE-HIP: module @device_gfx908 attributes {cir.offload.bundle_id = "hip-amdgcn-amd-amdhsa--gfx908", cir.offload.kind = #cir.offload<device>} {
 
+// A split module is printed as a top-level module, so it defines its type
+// aliases instead of spelling every type out at each use.
+// RUN: cir-offload-merge -split \
+// RUN:   -input=%t/aliases.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu \
+// RUN:   -output=%t/split-aliases-host.cir
+// RUN: FileCheck %s --check-prefix=SPLIT-ALIASES --input-file=%t/split-aliases-host.cir
+// RUN: cir-opt %t/split-aliases-host.cir --verify-roundtrip -o /dev/null
+
+// SPLIT-ALIASES: !s32i = !cir.int<s, 32>
+// SPLIT-ALIASES: !rec_S = !cir.struct<"S" {data !s32i, data !s32i}>
+// SPLIT-ALIASES: module @host
+// SPLIT-ALIASES-NEXT: cir.global external @s = #cir.zero : !rec_S
+
 // RUN: not cir-offload-merge -input=%t/host.cir -targets=host-x86_64-unknown-linux-gnu -output=%t/out.cir 2>&1 | FileCheck %s --check-prefix=ERR-NO-MODE
 // ERR-NO-MODE: error: expected exactly one of -combine or -split
 
@@ -178,6 +192,17 @@ module attributes {cir.offload.container} {
   builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
   }
   builtin.module @device attributes {cir.offload.kind = #cir.offload<device>} {
+  }
+}
+
+//--- aliases.cir
+!s32i = !cir.int<s, 32>
+!rec_S = !cir.struct<"S" {data !s32i, data !s32i}>
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.bundle_id = "host-x86_64-unknown-linux-gnu", cir.offload.kind = #cir.offload<host>} {
+    cir.global external @s = #cir.zero : !rec_S
+  }
+  builtin.module @device_0 attributes {cir.offload.bundle_id = "cuda-nvptx64-nvidia-cuda--sm_80", cir.offload.kind = #cir.offload<device>} {
   }
 }
 
