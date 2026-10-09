@@ -356,6 +356,8 @@ int runOffloadOptPasses(mlir::ModuleOp module) {
 }
 
 int writeModuleToOutput(mlir::ModuleOp module, llvm::StringRef outputFileName) {
+  assert(!module->getParentOp() &&
+         "module must be top-level for its type aliases to be printed");
   std::string errorMessage;
   std::unique_ptr<llvm::ToolOutputFile> outputFile =
       mlir::openOutputFile(outputFileName, &errorMessage);
@@ -410,8 +412,10 @@ int splitInput(llvm::StringRef inputFileName,
   llvm::StringSet<> seenBundleIDs;
 
   // Host first, then devices: the host is a legitimate split target too, and
-  // getOffloadContainerDeviceModules() deliberately skips it.
-  for (mlir::ModuleOp nestedModule : container.getOps<mlir::ModuleOp>()) {
+  // getOffloadContainerDeviceModules() deliberately skips it. Written modules
+  // are detached from the container, so iterate with an early-inc range.
+  for (mlir::ModuleOp nestedModule :
+       llvm::make_early_inc_range(container.getOps<mlir::ModuleOp>())) {
     auto bundleIDAttr = nestedModule->getAttrOfType<mlir::StringAttr>(
         cir::CIRDialect::getOffloadBundleIDAttrName());
     if (!bundleIDAttr)
@@ -443,7 +447,12 @@ int splitInput(llvm::StringRef inputFileName,
     if (match->Written)
       return reportError("multiple modules match target '" + match->Target +
                          "'");
-    if (int errorCode = writeModuleToOutput(nestedModule, match->Output))
+    // Print the module as a top-level operation of its own. MLIR emits type
+    // aliases only when printing an operation without a parent, so if nested
+    // inside the container, every type would be spelled out inline at each use.
+    nestedModule->remove();
+    mlir::OwningOpRef<mlir::ModuleOp> detachedModule(nestedModule);
+    if (int errorCode = writeModuleToOutput(*detachedModule, match->Output))
       return errorCode;
     match->Written = true;
   }
