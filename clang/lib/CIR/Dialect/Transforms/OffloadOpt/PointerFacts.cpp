@@ -6,18 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Stamps `llvm.noalias` on device-kernel pointer parameters when every visible
-// launch of the kernel passes pointers that provably come from distinct
-// cudaMalloc calls and the kernel body cannot reach the pointer through any
-// other path. A launch argument's root is the cudaMalloc whose result reaches
-// the launch: it dominates the read of the slot and every other write to the
-// slot dominates it. Unchecked allocations are accepted; only a free before the
-// launch invalidates a slot.
+// Derives facts about device-kernel pointer parameters from the host launches
+// in an offload container and stamps them as parameter attributes.
 //
-// The analysis is conservative and kernel-wide: a repeated root, an unprovable
-// argument, or an unprovable body path drops every launch-derived annotation
-// for that kernel. It attaches attributes in place, creates no clones, emits no
-// diagnostics, and always succeeds.
+// Host side: each pointer argument of a launch is traced to its root, the
+// allocation call whose result reaches the launch. Only cudaMalloc is
+// recognized today. A root freed before the launch does not count.
+// Device side: every pointer in the kernel and its callees must come from a
+// known source, so a buffer is reached only through its parameter.
+//
+// llvm.noalias is the only fact today. It is stamped when every visible launch
+// passes pointers with distinct roots and the device side holds; otherwise the
+// kernel gets no facts.
 //
 //===----------------------------------------------------------------------===//
 
