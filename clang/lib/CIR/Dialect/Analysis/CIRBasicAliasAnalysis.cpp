@@ -294,10 +294,9 @@ mlir::Value cir::getUnderlyingObject(mlir::Value val) {
         LDBG() << "GetMemberOp[0], following to underlying object";
         val = op.getAddr();
         continue;
-      } else {
-        LDBG() << "GetMemberOp, non-zero index, stopping";
-        break;
       }
+      LDBG() << "GetMemberOp, non-zero index, stopping";
+      break;
     }
     if (auto op = mlir::dyn_cast<cir::GetElementOp>(defOp)) {
       cir::IntAttr index;

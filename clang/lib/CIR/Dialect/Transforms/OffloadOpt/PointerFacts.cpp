@@ -275,7 +275,9 @@ static bool bodyAllowsNoalias(cir::FuncOp kernel) {
 // provide an inline `template <class T> cudaMalloc(T **, size_t)` shim that
 // PolyBench-style code calls without a cast; CIRGen keeps the call to the
 // instantiation visible (no inlining runs before this pass), so recognize both
-// the plain symbol and its mangled C++ template instantiations.
+// the plain symbol and its mangled C++ template instantiations. Only Itanium
+// mangling is handled; under another scheme the shim is not recognized and the
+// launch gets no facts.
 //TODO: Implement this for HIP symbols!.
 static bool isCudaMallocSymbol(llvm::StringRef callee) {
   if (callee == "cudaMalloc")
