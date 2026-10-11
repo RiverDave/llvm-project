@@ -1,3 +1,7 @@
+set(LLVM_LINK_COMPONENTS
+  Demangle
+  )
+
 add_clang_library(MLIRCIROffloadOpt
   KernelBindingTable.cpp
   KernelCloning.cpp
