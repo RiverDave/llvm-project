@@ -554,8 +554,8 @@ module attributes {cir.offload.container} {
   }
 }
 
-// CHECK-LABEL: cir.func @kern_global(%arg0: !cir.ptr<!cir.float>) cc(ptx_kernel)
-// CHECK-NOT: llvm.noalias
+// Taking a global's address keeps the fact: its storage is not a launch buffer.
+// CHECK-LABEL: cir.func @kern_global(%arg0: !cir.ptr<!cir.float> {llvm.noalias}) cc(ptx_kernel)
 
 // -----
 

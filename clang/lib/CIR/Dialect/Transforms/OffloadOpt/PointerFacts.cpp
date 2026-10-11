@@ -80,6 +80,7 @@ struct SlotRoot {
 
 static bool resolveValueToRoot(Value v, SlotRoot &out, DominanceInfo &dom,
                                unsigned depth);
+static bool isCleanSlot(Value slot);
 
 // Whether `v` transitively derives from a pointer parameter of `kernel`. Only
 // pointer-typed operands are followed, so comparing a pointer against null and
@@ -124,16 +125,6 @@ static bool derivesFromPointerParam(Value v, cir::FuncOp kernel) {
   return false;
 }
 
-// CUDA builtin variables (__cuda_builtin_blockIdx_t, ...) are compiler-owned
-// records in the constant bank; they can never alias device allocations.
-static bool isCudaBuiltinVar(cir::GetGlobalOp getGlobal) {
-  auto ptrTy = mlir::dyn_cast<cir::PointerType>(getGlobal.getResult().getType());
-  if (!ptrTy)
-    return false;
-  auto rec = mlir::dyn_cast<cir::RecordType>(ptrTy.getPointee());
-  return rec && rec.getName().getValue().starts_with("__cuda_builtin_");
-}
-
 // A local slot holding a pointer derived from a kernel parameter carries that
 // pointer on the stack; forwarding the slot itself to a callee can leak it.
 static bool slotHoldsDerivedPointer(Value slot, cir::FuncOp kernel) {
@@ -168,6 +159,25 @@ static bool isAllowedIntrinsic(llvm::StringRef name) {
          name.starts_with("nvvm.barrier.cta.");
 }
 
+// Where a pointer value in device code may come from: the address of a local or
+// a global, null, an offset or cast of another pointer, or a reload from a
+// clean local slot. Any other op could bring in an address read from memory,
+// which may be a kernel buffer's. A global's storage is never a launch buffer;
+// a pointer loaded out of one is not a reload from a local slot.
+static bool isAllowedPointerSource(Operation *op) {
+  if (mlir::isa<cir::AllocaOp, cir::GetGlobalOp, cir::PtrStrideOp,
+                cir::GetMemberOp, cir::GetElementOp, cir::SelectOp>(op))
+    return true;
+  if (auto constant = mlir::dyn_cast<cir::ConstantOp>(op))
+    return constant.isNullPtr();
+  if (auto cast = mlir::dyn_cast<cir::CastOp>(op))
+    return cast.isAllocaPreservingCast() ||
+           cast.getKind() == cir::CastKind::array_to_ptrdecay;
+  if (auto load = mlir::dyn_cast<cir::LoadOp>(op))
+    return isCleanSlot(load.getAddr());
+  return false;
+}
+
 // Checks one function reachable from the kernel and collects the callees whose
 // bodies must be checked next. `fn`'s own parameters anchor the derivation
 // checks: in a callee they can only carry pointers the caller was allowed to
@@ -179,20 +189,15 @@ static bool functionAllowsNoalias(cir::FuncOp fn,
     if (!ok)
       return;
 
-    if (auto getGlobal = mlir::dyn_cast<cir::GetGlobalOp>(op)) {
-      if (!isCudaBuiltinVar(getGlobal)) {
-        ok = false;
-        return;
-      }
+    if (llvm::any_of(op->getResultTypes(), [](Type type) {
+          return mlir::isa<cir::PointerType>(type);
+        }) && !isAllowedPointerSource(op)) {
+      ok = false;
+      return;
     }
 
     if (auto call = mlir::dyn_cast<cir::CallOp>(op)) {
       std::optional<llvm::StringRef> callee = call.getCallee();
-      if (callee && (callee->contains("malloc") || callee->contains("Malloc") ||
-                     callee->contains("free") || callee->contains("Free"))) {
-        ok = false;
-        return;
-      }
       for (Value operand : call.getArgOperands())
         if (derivesFromPointerParam(operand, fn) ||
             slotHoldsDerivedPointer(operand, fn)) {
@@ -227,17 +232,6 @@ static bool functionAllowsNoalias(cir::FuncOp fn,
       return;
     }
 
-    if (auto load = mlir::dyn_cast<cir::LoadOp>(op)) {
-      // Reloading a pointer from a local stack slot is the round-trip of a
-      // value this body already holds (parameter materialization); pointers
-      // loaded from real memory still drop the fact.
-      if (mlir::isa<cir::PointerType>(load.getResult().getType()) &&
-          !load.getAddr().getDefiningOp<cir::AllocaOp>()) {
-        ok = false;
-        return;
-      }
-    }
-
     if (auto store = mlir::dyn_cast<cir::StoreOp>(op)) {
       // Storing into a local stack slot keeps the value on the stack; escapes
       // through memory or callees are caught by the other obligations (and by
@@ -252,12 +246,6 @@ static bool functionAllowsNoalias(cir::FuncOp fn,
     if (auto cast = mlir::dyn_cast<cir::CastOp>(op)) {
       if (cast.getKind() == cir::CastKind::ptr_to_int &&
           derivesFromPointerParam(cast.getSrc(), fn)) {
-        ok = false;
-        return;
-      }
-      // A pointer made from an integer is not based on any parameter, yet it
-      // can hold the address of a parameter's buffer.
-      if (cast.getKind() == cir::CastKind::int_to_ptr) {
         ok = false;
         return;
       }
@@ -350,6 +338,41 @@ classifyDevPtrWriters(const llvm::SmallPtrSetImpl<Value> &family,
   return true;
 }
 
+// The slot and every cast of it that still points at the slot (such as the
+// `ptr<ptr<T>> -> ptr<ptr<void>>` cast cudaMalloc takes).
+static void collectSlotFamily(Value slot,
+                              llvm::SmallPtrSetImpl<Value> &family) {
+  llvm::SmallVector<Value, 8> work{slot};
+  family.insert(slot);
+  while (!work.empty()) {
+    Value cur = work.pop_back_val();
+    for (OpOperand &use : cur.getUses()) {
+      auto cast = mlir::dyn_cast<cir::CastOp>(use.getOwner());
+      if (cast && cast.getSrc() == cur && cast.isAllocaPreservingCast())
+        if (family.insert(cast.getResult()).second)
+          work.push_back(cast.getResult());
+    }
+  }
+}
+
+// A device-side local slot is clean when plain pointer stores are its only
+// writers, so a pointer reloaded from it is one the function already held.
+// memcpy into the slot, an atomic on it, or handing it to a callee makes it
+// dirty.
+static bool isCleanSlot(Value slot) {
+  if (!slot.getDefiningOp<cir::AllocaOp>())
+    return false;
+  llvm::SmallPtrSet<Value, 8> family;
+  collectSlotFamily(slot, family);
+  llvm::SmallVector<Operation *, 4> writers;
+  if (!classifyDevPtrWriters(family, writers))
+    return false;
+  return llvm::all_of(writers, [](Operation *writer) {
+    auto store = mlir::dyn_cast<cir::StoreOp>(writer);
+    return store && mlir::isa<cir::PointerType>(store.getValue().getType());
+  });
+}
+
 // The writer whose device address `devPtrLoad` reads: it dominates
 // `devPtrLoad` and every other writer dominates it, so no other write lands in
 // between.
@@ -378,20 +401,8 @@ static bool resolveAddressToRoot(Value addr, Operation *devPtrLoad,
   if (!addr.getDefiningOp<cir::AllocaOp>())
     return false;
 
-  // Follow alloca-preserving casts so the recognizer sees the slot behind the
-  // `ptr<ptr<T>> -> ptr<ptr<void>>` cast cudaMalloc takes.
   llvm::SmallPtrSet<Value, 8> family;
-  llvm::SmallVector<Value, 8> work{addr};
-  family.insert(addr);
-  while (!work.empty()) {
-    Value cur = work.pop_back_val();
-    for (OpOperand &use : cur.getUses()) {
-      auto cast = mlir::dyn_cast<cir::CastOp>(use.getOwner());
-      if (cast && cast.getSrc() == cur && cast.isAllocaPreservingCast())
-        if (family.insert(cast.getResult()).second)
-          work.push_back(cast.getResult());
-    }
-  }
+  collectSlotFamily(addr, family);
 
   llvm::SmallVector<Operation *, 4> devPtrWriters;
   if (!classifyDevPtrWriters(family, devPtrWriters))

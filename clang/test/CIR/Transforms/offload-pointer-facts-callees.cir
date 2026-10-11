@@ -398,3 +398,87 @@ module attributes {cir.offload.container} {
     }
   }
 }
+
+// -----
+
+// memcpy fills a local slot with a pointer read from a kernel buffer.
+// CHECK-LABEL: cir.func @k(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.ptr<!cir.float>>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.ptr<!cir.float>>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.ptr<!cir.float>>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.ptr<!cir.float>>>, !cir.ptr<!cir.ptr<!cir.float>>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !cir.ptr<!cir.ptr<!cir.float>>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %n = cir.const #cir.int<8> : !u64i
+      %p = cir.alloca "p" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %dst = cir.cast bitcast %p : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!void>
+      %src = cir.cast bitcast %arg0 : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!void>
+      cir.libc.memcpy %n bytes from %src to %dst : !u64i, !cir.ptr<!void> -> !cir.ptr<!void>
+      %v = cir.load %arg1 : !cir.ptr<!cir.float>, !cir.float
+      %q = cir.load %p : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.store %v, %q : !cir.float, !cir.ptr<!cir.float>
+      cir.return
+    }
+  }
+}
+
+// -----
+
+// An atomic exchange reads a pointer from a kernel buffer.
+// CHECK-LABEL: cir.func @k(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.ptr<!cir.float>>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.ptr<!cir.float>>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.ptr<!cir.float>>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.ptr<!cir.float>>>, !cir.ptr<!cir.ptr<!cir.float>>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @k(%arg0: !cir.ptr<!cir.ptr<!cir.float>>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %null = cir.const #cir.ptr<null> : !cir.ptr<!cir.float>
+      %q = cir.atomic.xchg seq_cst syncscope(system) %arg0, %null : (!cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>) -> !cir.ptr<!cir.float>
+      %v = cir.load %arg1 : !cir.ptr<!cir.float>, !cir.float
+      cir.store %v, %q : !cir.float, !cir.ptr<!cir.float>
+      cir.return
+    }
+  }
+}
