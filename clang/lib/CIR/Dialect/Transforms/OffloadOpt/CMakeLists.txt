@@ -1,9 +1,14 @@
+set(LLVM_LINK_COMPONENTS
+  Demangle
+  )
+
 add_clang_library(MLIRCIROffloadOpt
   KernelBindingTable.cpp
   KernelCloning.cpp
   DeadKernelElimination.cpp
   KernelArgConstantPropagation.cpp
   LaunchBoundsPropagation.cpp
+  PointerFacts.cpp
 
   DEPENDS
   MLIRCIROpsIncGen
@@ -11,6 +16,7 @@ add_clang_library(MLIRCIROffloadOpt
 
   LINK_LIBS PUBLIC
   MLIRCIR
+  MLIRCIRAnalysis
   MLIRIR
   MLIRPass
   MLIRSupport

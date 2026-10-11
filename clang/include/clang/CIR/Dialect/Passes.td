@@ -388,4 +388,35 @@ def OffloadLaunchBoundsPropagation
   let dependentDialects = ["cir::CIRDialect"];
 }
 
+def OffloadPointerFacts
+    : Pass<"cir-offload-pointer-facts", "mlir::ModuleOp"> {
+  let summary = "Stamp launch-derived pointer facts on kernel parameters";
+  let description = [{
+    Runs over a `cir.offload.container`. Derives facts about the pointer
+    parameters of a device kernel from its host launches and attaches them to
+    the parameters as attributes.
+
+    Each pointer argument of a launch is traced to the offload allocation call
+    it comes from. Only CUDA's `cudaMalloc` is recognized today.
+
+    Requires every launch to be visible. If a launch or the kernel body cannot
+    be proven, the kernel gets no facts.
+
+    Facts:
+
+    * `llvm.noalias`: at every launch the pointer arguments come from different
+      allocations, and the kernel reaches a buffer only through its parameter.
+  }];
+  let constructor = "mlir::createOffloadPointerFactsPass()";
+  let dependentDialects = ["cir::CIRDialect"];
+  let statistics = [
+    Statistic<"numKernelsNoalias", "num-kernels-noalias",
+              "Number of device kernels stamped with at least one llvm.noalias">,
+    Statistic<"numParamsNoalias", "num-params-noalias",
+              "Number of kernel pointer parameters that received llvm.noalias">,
+    Statistic<"numKernelsSkipped", "num-kernels-skipped",
+              "Number of kernels that received no launch-derived fact">,
+  ];
+}
+
 #endif // CLANG_CIR_DIALECT_PASSES_TD
