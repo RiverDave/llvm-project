@@ -3395,7 +3395,6 @@ static Action *buildCudaFatBinary(Compilation &C,
     SmallVector<Action *, 2> Images{PerArchActions[I]};
     if (PerArchActions[I]->getType() == types::TY_Object)
       Images.push_back(PerArchActions[I]->getInputs()[0]);
-    assert(Images.back()->getType() == types::TY_PP_Asm);
     for (Action *A : Images) {
       OffloadAction::DeviceDependences DDep;
       DDep.add(*A, *ToolChains[I], BoundArch(BoundArchs[I]), Action::OFK_Cuda);
