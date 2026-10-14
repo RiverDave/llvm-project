@@ -53,6 +53,29 @@
 // MULTI: "{{.*}}fatbinary{{(\.exe)?}}"{{.*}} "--create" "[[MULTI_FATBIN:[^"]+\.fatbin]]"{{.*}} "--image3=kind=elf,sm=60,file=[[MULTI_DEV60_CUBIN]]" "--image3=kind=elf,sm=70,file=[[MULTI_DEV70_CUBIN]]" "--image3=kind=elf,sm=80,file=[[MULTI_DEV80_CUBIN]]" "--image3=kind=elf,sm=90,file=[[MULTI_DEV90_CUBIN]]"
 // MULTI: "-cc1"{{.*}} "-emit-obj"{{.*}} "-foffload-include-binary" "[[MULTI_FATBIN]]"{{.*}} "-x" "cir" "[[MULTI_HOST_SPLIT]]"
 
+// With -save-temps every phase is a job of its own. The preprocessors are
+// built for their side, the fatbinary is embedded by the host backend, and the
+// host assembler gets the host assembly alone.
+// RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
+// RUN:   --cuda-gpu-arch=sm_80 -nocudainc -nocudalib --clangir-offload-merge \
+// RUN:   -save-temps -c %s 2>&1 \
+// RUN: | FileCheck %s --check-prefix=SAVE-TEMPS
+// SAVE-TEMPS: "-cc1" "-triple" "x86_64-unknown-linux-gnu" "-aux-triple" "nvptx64-nvidia-cuda"{{.*}} "-E"
+// SAVE-TEMPS: "-cc1" "-triple" "nvptx64-nvidia-cuda"{{.*}} "-E"{{.*}} "-fcuda-is-device"
+// SAVE-TEMPS: "{{.*}}fatbinary{{(\.exe)?}}"{{.*}} "--create" "[[ST_FATBIN:[^"]+\.fatbin]]"
+// SAVE-TEMPS: "-cc1" "-triple" "x86_64-unknown-linux-gnu"{{.*}} "-S"{{.*}} "-foffload-include-binary" "[[ST_FATBIN]]"{{.*}} "-o" "[[ST_HOST_ASM:[^"]+\.s]]" "-x" "cir"
+// SAVE-TEMPS: "-cc1as"{{.*}} "[[ST_HOST_ASM]]"{{$}}
+
+// With -S the device stops at PTX, which goes into the fatbinary without
+// being assembled, and the host assembly embeds that fatbinary.
+// RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
+// RUN:   --cuda-gpu-arch=sm_80 -nocudainc -nocudalib --clangir-offload-merge \
+// RUN:   -S %s 2>&1 \
+// RUN: | FileCheck %s --check-prefix=ASM --implicit-check-not=ptxas
+// ASM: "-cc1"{{.*}} "-S"{{.*}} "-fcuda-is-device"{{.*}} "-o" "[[ASM_DEV_PTX:[^"]+\.s]]"{{.*}} "-x" "cir"
+// ASM: "{{.*}}fatbinary{{(\.exe)?}}"{{.*}} "--create" "[[ASM_FATBIN:[^"]+\.fatbin]]"
+// ASM: "-cc1" "-triple" "x86_64-unknown-linux-gnu"{{.*}} "-S"{{.*}} "-foffload-include-binary" "[[ASM_FATBIN]]"{{.*}} "-x" "cir"
+
 // Without --clangir-offload-merge the normal pipeline runs: no merge/split.
 // RUN: %clang -### -target x86_64-unknown-linux-gnu -x cuda -fclangir \
 // RUN:   --cuda-gpu-arch=sm_80 -nocudainc -nocudalib -c %s 2>&1 \
