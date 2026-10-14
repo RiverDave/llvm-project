@@ -46,6 +46,19 @@
 // MULTI: "{{.*}}clang-linker-wrapper{{(\.exe)?}}"{{.*}} "--emit-fatbin-only"{{.*}} "-o" "[[MULTI_FATBIN:[^"]+\.hipfb]]"
 // MULTI: "-cc1"{{.*}} "-emit-obj"{{.*}} "-foffload-include-binary" "[[MULTI_FATBIN]]"{{.*}} "-x" "cir" "[[MULTI_HOST_SPLIT]]"
 
+// With -save-temps every phase is a job of its own. The preprocessors are
+// built for their side, the fat binary is embedded by the host backend, and
+// the host assembler gets the host assembly alone.
+// RUN: %clang -### -target x86_64-unknown-linux-gnu -x hip -fclangir \
+// RUN:   --offload-arch=gfx90a -nogpuinc -nogpulib --clangir-offload-merge \
+// RUN:   -save-temps -c %s 2>&1 \
+// RUN: | FileCheck %s --check-prefix=SAVE-TEMPS
+// SAVE-TEMPS: "-cc1" "-triple" "x86_64-unknown-linux-gnu" "-aux-triple" "amdgpu-amd-amdhsa"{{.*}} "-E"
+// SAVE-TEMPS: "-cc1" "-triple" "amdgpu9.0a-amd-amdhsa"{{.*}} "-E"{{.*}} "-fcuda-is-device"
+// SAVE-TEMPS: "{{.*}}clang-linker-wrapper{{(\.exe)?}}"{{.*}} "-o" "[[ST_FATBIN:[^"]+\.hipfb]]"
+// SAVE-TEMPS: "-cc1" "-triple" "x86_64-unknown-linux-gnu"{{.*}} "-S"{{.*}} "-foffload-include-binary" "[[ST_FATBIN]]"{{.*}} "-o" "[[ST_HOST_ASM:[^"]+\.s]]" "-x" "cir"
+// SAVE-TEMPS: "-cc1as"{{.*}} "[[ST_HOST_ASM]]"{{$}}
+
 // Without --clangir-offload-merge the normal pipeline runs: no merge/split.
 // RUN: %clang -### -target x86_64-unknown-linux-gnu -x hip -fclangir \
 // RUN:   --offload-arch=gfx90a -nogpuinc -nogpulib \

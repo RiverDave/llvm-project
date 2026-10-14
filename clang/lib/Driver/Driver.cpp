@@ -3381,21 +3381,21 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
   }
 }
 
-// Wrap each device cubin and its ptx into per-target offload dependences and
-// link them into a single CUDA fatbinary.
+// Wrap each device image into a per-target offload dependence and link them
+// into a single CUDA fatbinary. Each per-arch action is either the PTX backend
+// or, when assembling, the cubin built from it.
 static Action *buildCudaFatBinary(Compilation &C,
-                                  ArrayRef<Action *> AssembleActions,
+                                  ArrayRef<Action *> PerArchActions,
                                   ArrayRef<const ToolChain *> ToolChains,
                                   ArrayRef<const char *> BoundArchs) {
-  assert(AssembleActions.size() == ToolChains.size() &&
-         AssembleActions.size() == BoundArchs.size());
+  assert(PerArchActions.size() == ToolChains.size() &&
+         PerArchActions.size() == BoundArchs.size());
   ActionList DeviceActions;
-  for (unsigned I = 0, E = AssembleActions.size(); I != E; ++I) {
-    Action *Assemble = AssembleActions[I];
-    assert(Assemble->getType() == types::TY_Object);
-    Action *Backend = Assemble->getInputs()[0];
-    assert(Backend->getType() == types::TY_PP_Asm);
-    for (Action *A : {Assemble, Backend}) {
+  for (unsigned I = 0, E = PerArchActions.size(); I != E; ++I) {
+    SmallVector<Action *, 2> Images{PerArchActions[I]};
+    if (PerArchActions[I]->getType() == types::TY_Object)
+      Images.push_back(PerArchActions[I]->getInputs()[0]);
+    for (Action *A : Images) {
       OffloadAction::DeviceDependences DDep;
       DDep.add(*A, *ToolChains[I], BoundArch(BoundArchs[I]), Action::OFK_Cuda);
       DeviceActions.push_back(C.MakeAction<OffloadAction>(DDep, A->getType()));
@@ -3757,15 +3757,17 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
       // Otherwise construct the appropriate action.
       Action *NewCurrent = nullptr;
       // CIR offload split produces host/device CIR dependences under one
-      // OffloadAction. Apply backend phases to each dependence separately.
-      if (isCIROffloadMerge(C, Args) &&
-          (Phase == phases::Backend || Phase == phases::Assemble)) {
+      // OffloadAction. At the backend phase, carry each device dependence to
+      // its fat binary and attach that to the host backend, which embeds it.
+      // Like the normal offload driver, the device image goes to the first
+      // host job that generates code. Later host phases then take the plain
+      // path, which matters when -save-temps keeps them as separate jobs.
+      if (isCIROffloadMerge(C, Args) && Phase == phases::Backend) {
         if (auto *OA = dyn_cast<OffloadAction>(Current)) {
           OffloadAction::DeviceDependences DDeps;
           // CUDA and HIP are mutually exclusive, so one set of per-arch device
           // inputs serves whichever fatbin builder applies. The collected
-          // element differs by kind: a cubin AssembleJobAction for CUDA, the
-          // device CIR for HIP.
+          // element differs by kind: the device CIR for HIP, the PTX for CUDA.
           SmallVector<Action *, 4> DeviceActions;
           SmallVector<const ToolChain *, 4> DeviceToolChains;
           SmallVector<const char *, 4> DeviceArchs;
@@ -3774,33 +3776,22 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
               [&](Action *DepA, const ToolChain *DepTC,
                   BoundArch DepBoundArch) {
                 Action::OffloadKind Kind = DepA->getOffloadingDeviceKind();
-
-                // HIP packages the device CIR at the backend phase; the
-                // resulting fat binary passes through the assemble phase
-                // untouched (it is not TY_PP_Asm).
-                if (Kind == Action::OFK_HIP && Phase == phases::Backend) {
-                  FatbinKind = Kind;
-                  DeviceActions.push_back(DepA);
-                  DeviceToolChains.push_back(DepTC);
-                  DeviceArchs.push_back(DepBoundArch.ArchName.data());
-                  return;
+                Action *DeviceAction = DepA;
+                if (Kind == Action::OFK_Cuda) {
+                  for (phases::ID DevicePhase :
+                       {phases::Backend, phases::Assemble}) {
+                    if (!llvm::is_contained(PL, DevicePhase))
+                      break;
+                    DeviceAction = ConstructPhaseAction(C, Args, DevicePhase,
+                                                        DeviceAction, Kind);
+                    DeviceAction->propagateDeviceOffloadInfo(Kind, DepBoundArch,
+                                                             DepTC);
+                  }
                 }
-
-                Action *DeviceAction =
-                    ConstructPhaseAction(C, Args, Phase, DepA, Kind);
-                DeviceAction->propagateDeviceOffloadInfo(Kind, DepBoundArch,
-                                                         DepTC);
-
-                if (Kind == Action::OFK_Cuda &&
-                    isa<AssembleJobAction>(DeviceAction)) {
-                  FatbinKind = Kind;
-                  DeviceActions.push_back(DeviceAction);
-                  DeviceToolChains.push_back(DepTC);
-                  DeviceArchs.push_back(DepBoundArch.ArchName.data());
-                  return;
-                }
-
-                DDeps.add(*DeviceAction, *DepTC, DepBoundArch, Kind);
+                FatbinKind = Kind;
+                DeviceActions.push_back(DeviceAction);
+                DeviceToolChains.push_back(DepTC);
+                DeviceArchs.push_back(DepBoundArch.ArchName.data());
               });
 
           Action *Fatbin = nullptr;
@@ -4315,6 +4306,10 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
               break;
           }
 
+          // Stamp the whole chain: with -save-temps the preprocessor is a job
+          // of its own and must be built for the device too.
+          DeviceAction->propagateDeviceOffloadInfo(Kind, Arch, TC);
+
           if (DeviceAction->getType() != types::TY_CIR)
             return HostAction;
 
@@ -4328,12 +4323,13 @@ Driver::BuildOffloadingActions(Compilation &C, llvm::opt::DerivedArgList &Args,
       return HostAction;
 
     // The host CIR compile sits below the split barrier, so host offload-kind
-    // propagation never reaches it. Stamp it directly so the host cc1 gets the
-    // CUDA setup (AddCudaIncludeArgs, -aux-triple) the stock host compile gets.
+    // propagation never reaches it. Stamp it and its inputs directly so the
+    // host cc1 gets the CUDA setup (AddCudaIncludeArgs, -aux-triple) the stock
+    // host compile gets, including a preprocessor -save-temps keeps separate.
     unsigned HostKinds = 0;
     for (const CIROffloadDep &Dep : ArrayRef(Deps).drop_front())
       HostKinds |= Dep.Kind;
-    HostAction->setHostOffloadInfo(HostKinds, /*OArch=*/BoundArch());
+    HostAction->propagateHostOffloadInfo(HostKinds, /*OArch=*/BoundArch());
 
     auto *Merge = C.MakeAction<CIRMergeJobAction>(MergeInputs);
     for (const CIROffloadDep &Dep : Deps)
