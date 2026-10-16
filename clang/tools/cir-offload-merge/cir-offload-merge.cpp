@@ -22,9 +22,11 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
@@ -33,6 +35,7 @@
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/OpenMP/RegisterOpenMPExtensions.h"
 #include "clang/CIR/Dialect/Passes.h"
+#include "clang/CIR/Dialect/Transforms/OffloadOpt/KernelBindingTable.h"
 #include "clang/Driver/OffloadBundler.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -43,10 +46,12 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/AMDGPUTargetParser.h"
 
+#include <algorithm>
 #include <cctype>
 #include <optional>
 #include <string>
@@ -479,6 +484,89 @@ int splitInput(llvm::StringRef inputFileName,
   return 0;
 }
 
+// Appends the scalar leaves of `ty`, placed at `offset`, as "offset:type"
+// strings, so that records compare by layout rather than by name or by how
+// their padding is spelled.
+void appendLayoutLeaves(mlir::Type ty, uint64_t offset,
+                        const mlir::DataLayout &dl,
+                        llvm::SmallVectorImpl<std::string> &leaves) {
+  if (auto record = mlir::dyn_cast<cir::StructType>(ty)) {
+    for (auto [i, member] : llvm::enumerate(record.getMembers()))
+      if (record.getMemberKinds()[i] != cir::RecordMemberKind::Pad)
+        appendLayoutLeaves(member, offset + record.getElementOffset(dl, i), dl,
+                           leaves);
+    return;
+  }
+  if (auto array = mlir::dyn_cast<cir::ArrayType>(ty)) {
+    mlir::Type elt = array.getElementType();
+    uint64_t stride =
+        llvm::alignTo(dl.getTypeSize(elt), dl.getTypeABIAlignment(elt));
+    for (uint64_t i = 0; i < array.getSize(); ++i)
+      appendLayoutLeaves(elt, offset + i * stride, dl, leaves);
+    return;
+  }
+  std::string leaf;
+  llvm::raw_string_ostream os(leaf);
+  os << offset << ':';
+  // Pointers and unions can spell a record name, which differs between
+  // modules; compare them by size only.
+  if (mlir::isa<cir::IntType, cir::BoolType, cir::FPTypeInterface>(ty))
+    os << ty;
+  else
+    os << dl.getTypeSize(ty) << " bytes";
+  leaves.push_back(leaf);
+}
+
+// Warns about kernel arguments whose layout differs between the host and a
+// device module: the kernel would read the host's bytes with another layout.
+// The host side comes from the HIP kernel handle, whose type keeps the source
+// signature. CUDA has no handle and its stub is already ABI-lowered, so CUDA
+// kernels are not checked.
+void checkKernelArgLayouts(mlir::ModuleOp container) {
+  mlir::ModuleOp host = cir::getOffloadContainerHostModule(container);
+  mlir::DataLayout hostDL(host);
+  for (const auto &[name, binding] : cir::KernelBindingTable(container)) {
+    auto handle = host.lookupSymbol<cir::GlobalOp>(name);
+    auto handleTy = handle
+                        ? mlir::dyn_cast<cir::PointerType>(handle.getSymType())
+                        : nullptr;
+    auto hostFnTy = handleTy
+                        ? mlir::dyn_cast<cir::FuncType>(handleTy.getPointee())
+                        : nullptr;
+    if (!hostFnTy)
+      continue;
+    for (cir::FuncOp kernel : binding.deviceKernels) {
+      auto device = kernel->getParentOfType<mlir::ModuleOp>();
+      mlir::DataLayout deviceDL(device);
+      llvm::ArrayRef<mlir::Type> deviceTys =
+          kernel.getFunctionType().getInputs();
+      if (deviceTys.size() != hostFnTy.getNumInputs())
+        continue;
+      for (auto [i, hostTy, deviceTy] :
+           llvm::enumerate(hostFnTy.getInputs(), deviceTys)) {
+        llvm::SmallVector<std::string> hostLeaves, deviceLeaves;
+        appendLayoutLeaves(hostTy, 0, hostDL, hostLeaves);
+        appendLayoutLeaves(deviceTy, 0, deviceDL, deviceLeaves);
+        hostLeaves.push_back("size " +
+                             std::to_string(hostDL.getTypeSize(hostTy)));
+        deviceLeaves.push_back("size " +
+                               std::to_string(deviceDL.getTypeSize(deviceTy)));
+        auto [h, d] = std::mismatch(hostLeaves.begin(), hostLeaves.end(),
+                                    deviceLeaves.begin(), deviceLeaves.end());
+        if (h == hostLeaves.end() && d == deviceLeaves.end())
+          continue;
+        kernel.emitWarning()
+            << "argument " << i << " of kernel '" << name
+            << "' has a different layout on the host and in "
+            << *device.getSymName() << ": the host has '"
+            << (h == hostLeaves.end() ? "nothing" : *h)
+            << "' where the device has '"
+            << (d == deviceLeaves.end() ? "nothing" : *d) << "'";
+      }
+    }
+  }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -490,6 +578,9 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   registerDialects(registry);
   mlir::MLIRContext context;
+  llvm::SourceMgr sourceMgr;
+  mlir::SourceMgrDiagnosticHandler diagHandler(sourceMgr, &context);
+  context.printOpOnDiagnostic(false);
   context.loadDialect<cir::CIRDialect, mlir::memref::MemRefDialect,
                       mlir::LLVM::LLVMDialect, mlir::DLTIDialect,
                       mlir::omp::OpenMPDialect>();
@@ -507,6 +598,8 @@ int main(int argc, char **argv) {
 
     if (mlir::failed(mlir::verify(*combinedModule)))
       return reportError("failed to verify combined module");
+
+    checkKernelArgLayouts(*combinedModule);
 
     if (int errorCode = runOffloadOptPasses(*combinedModule))
       return errorCode;
