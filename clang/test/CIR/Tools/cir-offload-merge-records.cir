@@ -1,0 +1,32 @@
+// Host and device compilations can give one record name different bodies.
+// -combine keeps both by renaming the device module's records.
+
+// RUN: rm -rf %t && split-file %s %t
+// RUN: cir-offload-merge -combine -input=%t/host.cir -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,hip-amdgcn-amd-amdhsa--gfx942 \
+// RUN:   -output=%t/combined.cir
+// RUN: FileCheck %s --input-file=%t/combined.cir
+// RUN: cir-opt %t/combined.cir --verify-roundtrip -o /dev/null
+
+// CHECK-DAG: ![[HOST:rec_[A-Za-z0-9_]+]] = !cir.struct<"S" {data !s32i, data !cir.ptr<!s32i>}>
+// CHECK-DAG: ![[DEV:rec_[A-Za-z0-9_]+]] = !cir.struct<"S.[[DEVMOD:[a-z0-9_]+]]" {data !s32i}>
+// CHECK: module @host
+// CHECK: cir.func @h(%arg0: ![[HOST]])
+// CHECK: module @[[DEVMOD]]
+// CHECK: cir.func @d(%arg0: ![[DEV]])
+
+//--- host.cir
+!s32i = !cir.int<s, 32>
+module attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func @h(%arg0: !cir.struct<"S" {data !s32i, data !cir.ptr<!s32i>}>) {
+    cir.return
+  }
+}
+
+//--- device.cir
+!s32i = !cir.int<s, 32>
+module attributes {cir.triple = "amdgcn-amd-amdhsa"} {
+  cir.func @d(%arg0: !cir.struct<"S" {data !s32i}>) {
+    cir.return
+  }
+}

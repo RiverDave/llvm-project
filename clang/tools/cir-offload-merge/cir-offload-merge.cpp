@@ -292,9 +292,21 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> deviceModules;
   llvm::StringMap<unsigned> deviceNames;
 
+  // Host and device compilations name records independently: the same name
+  // can carry a different layout on each side (e.g. a member under
+  // __CUDA_ARCH__) or even a different record (CIRGen's "anon.N" counter).
+  // Give each device module's records its own names.
+  std::string &recordNameSuffix =
+      context.getLoadedDialect<cir::CIRDialect>()->recordNameSuffix;
   for (const InputTarget &inputTarget : inputTargets) {
+    std::string deviceName;
+    if (!inputTarget.IsHost)
+      deviceName =
+          makeUnique(sanitizeModuleName(inputTarget.Target), deviceNames);
+    recordNameSuffix = inputTarget.IsHost ? "" : "." + deviceName;
     mlir::OwningOpRef<mlir::ModuleOp> cirModule =
         parseCIRInput(inputTarget.Input, context);
+    recordNameSuffix.clear();
     if (!cirModule)
       return {};
 
@@ -305,8 +317,6 @@ combineInputs(llvm::ArrayRef<InputTarget> inputTargets,
       continue;
     }
 
-    std::string deviceName =
-        makeUnique(sanitizeModuleName(inputTarget.Target), deviceNames);
     setOffloadAttrs(*cirModule, deviceName, cir::OffloadKind::Device,
                     inputTarget.Target);
     deviceModules.push_back(std::move(cirModule));

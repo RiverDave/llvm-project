@@ -39,6 +39,10 @@ def CIR_Dialect : Dialect {
   let hasConstantMaterializer = 1;
 
   let extraClassDeclaration = [{
+    // Appended to every record name the parser reads while non-empty, so that
+    // modules parsed into one context can define the same name differently.
+    std::string recordNameSuffix;
+
     static llvm::StringRef getSourceLanguageAttrName() { return "cir.lang"; }
     static llvm::StringRef getTripleAttrName() { return "cir.triple"; }
     // TargetInfo::getABI(), e.g. "avx512" on x86 or "aapcs" on ARM.

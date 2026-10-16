@@ -176,6 +176,17 @@ verifyRecordMemberKinds(function_ref<mlir::InFlightDiagnostic()> emitError,
   return mlir::success();
 }
 
+// Parses an optional record name, applying CIRDialect::recordNameSuffix.
+static mlir::StringAttr parseRecordName(mlir::AsmParser &parser) {
+  mlir::StringAttr name;
+  parser.parseOptionalAttribute(name);
+  const std::string &suffix =
+      parser.getContext()->getLoadedDialect<CIRDialect>()->recordNameSuffix;
+  if (!name || suffix.empty())
+    return name;
+  return mlir::StringAttr::get(parser.getContext(), name.getValue() + suffix);
+}
+
 /// The keywords that spell a member kind.  A union's tail-padding slot probes
 /// for one of these to reject it, since that slot is not a member.
 static const llvm::StringRef memberKindMarks[] = {"data", "pad", "empty",
@@ -276,8 +287,7 @@ Type StructType::parse(mlir::AsmParser &parser) {
   // An optional "class" keyword distinguishes class from struct.
   bool is_class = parser.parseOptionalKeyword("class").succeeded();
 
-  mlir::StringAttr name;
-  parser.parseOptionalAttribute(name);
+  mlir::StringAttr name = parseRecordName(parser);
 
   // Self-reference: ensure the referenced type was already parsed.
   if (name && parser.parseOptionalGreater().succeeded()) {
@@ -424,8 +434,7 @@ Type UnionType::parse(mlir::AsmParser &parser) {
   if (parser.parseLess())
     return {};
 
-  mlir::StringAttr name;
-  parser.parseOptionalAttribute(name);
+  mlir::StringAttr name = parseRecordName(parser);
 
   // Self-reference.
   if (name && parser.parseOptionalGreater().succeeded()) {
