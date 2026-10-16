@@ -1,0 +1,23 @@
+// RUN: cir-opt %s -verify-diagnostics -split-input-file
+
+!s32i = !cir.int<s, 32>
+!rec_S = !cir.struct<"S" {data !s32i}>
+// expected-error @below {{record "S" redefined with a different body}}
+!rec_S1 = !cir.struct<"S" {data !s32i, data !s32i}>
+
+// -----
+
+!s32i = !cir.int<s, 32>
+!rec_U = !cir.union<"U" {data !s32i}>
+// expected-error @below {{record "U" redefined with a different body}}
+!rec_U1 = !cir.union<"U" {data !cir.float}>
+
+// -----
+
+// The same body twice is not a redefinition.
+!s32i = !cir.int<s, 32>
+!rec_S = !cir.struct<"S" {data !s32i}>
+!rec_S1 = !cir.struct<"S" {data !s32i}>
+cir.func @f(%arg0: !rec_S1) {
+  cir.return
+}
