@@ -30,7 +30,6 @@
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/Passes.h"
-#include "clang/Basic/TargetID.h"
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/OpenMP/RegisterOpenMPExtensions.h"
 #include "clang/CIR/Dialect/Passes.h"
@@ -46,6 +45,7 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/AMDGPUTargetParser.h"
 
 #include <cctype>
 #include <optional>
@@ -151,27 +151,31 @@ bool isCompatibleTarget(llvm::StringRef bundleID, llvm::StringRef target,
       !bundleInfo.Triple.isCompatibleWith(targetInfo.Triple))
     return false;
 
-  llvm::StringMap<bool> bundleFeatureMap;
-  llvm::StringMap<bool> targetFeatureMap;
-  std::optional<llvm::StringRef> bundleProcessor = clang::parseTargetID(
-      bundleInfo.Triple, bundleInfo.TargetID, &bundleFeatureMap);
-  std::optional<llvm::StringRef> targetProcessor = clang::parseTargetID(
-      targetInfo.Triple, targetInfo.TargetID, &targetFeatureMap);
-  if (!bundleProcessor || !targetProcessor ||
-      bundleProcessor.value() != targetProcessor.value())
+  // Only AMDGPU target IDs carry features (xnack/sramecc); elsewhere the
+  // processor has to match exactly.
+  if (!bundleInfo.Triple.isAMDGPU())
+    return bundleInfo.TargetID == targetInfo.TargetID;
+
+  std::optional<llvm::AMDGPU::TargetID> bundleAMDGPUID =
+      llvm::AMDGPU::TargetID::parse(bundleInfo.Triple, bundleInfo.TargetID);
+  std::optional<llvm::AMDGPU::TargetID> targetAMDGPUID =
+      llvm::AMDGPU::TargetID::parse(targetInfo.Triple, targetInfo.TargetID);
+  if (!bundleAMDGPUID || !targetAMDGPUID ||
+      bundleAMDGPUID->getGPUKind() != targetAMDGPUID->getGPUKind())
     return false;
 
-  if (bundleFeatureMap.getNumItems() > targetFeatureMap.getNumItems())
-    return false;
-
-  for (const auto &bundleFeature : bundleFeatureMap) {
-    auto targetFeature = targetFeatureMap.find(bundleFeature.getKey());
-    if (targetFeature == targetFeatureMap.end() ||
-        targetFeature->getValue() != bundleFeature.getValue())
-      return false;
-  }
-
-  return true;
+  // A feature the bundle leaves unspecified matches anything; one it sets
+  // must match the target's setting.
+  auto featureCompatible = [](llvm::AMDGPU::TargetIDSetting bundle,
+                              llvm::AMDGPU::TargetIDSetting target) {
+    return (bundle != llvm::AMDGPU::TargetIDSetting::On &&
+            bundle != llvm::AMDGPU::TargetIDSetting::Off) ||
+           bundle == target;
+  };
+  return featureCompatible(bundleAMDGPUID->getXnackSetting(),
+                           targetAMDGPUID->getXnackSetting()) &&
+         featureCompatible(bundleAMDGPUID->getSramEccSetting(),
+                           targetAMDGPUID->getSramEccSetting());
 }
 
 int validateCombineCommandLine(
