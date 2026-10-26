@@ -189,6 +189,12 @@ static bool functionAllowsNoalias(cir::FuncOp fn,
     if (!ok)
       return;
 
+    // Inline asm can capture its operands and touch any memory.
+    if (mlir::isa<cir::InlineAsmOp>(op)) {
+      ok = false;
+      return;
+    }
+
     if (llvm::any_of(op->getResultTypes(), [](Type type) {
           return mlir::isa<cir::PointerType>(type);
         }) && !isAllowedPointerSource(op)) {
