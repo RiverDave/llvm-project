@@ -34,6 +34,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/DebugLog.h"
+#include "llvm/TargetParser/Triple.h"
 
 #define DEBUG_TYPE "cir-offload-pointer-facts"
 
@@ -509,6 +510,16 @@ void OffloadPointerFactsPass::runOnOperation() {
   // alone, matching the other container passes.
   if (!cir::isOffloadContainer(container))
     return;
+
+  // Allocation and stub matching assume the Itanium ABI. MSVC hosts are not
+  // handled yet.
+  mlir::ModuleOp host = cir::getOffloadContainerHostModule(container);
+  if (auto triple = host->getAttrOfType<mlir::StringAttr>(
+          cir::CIRDialect::getTripleAttrName());
+      triple && llvm::Triple(triple.getValue()).isWindowsMSVCEnvironment()) {
+    LDBG() << "skipped: MSVC host";
+    return;
+  }
 
   cir::KernelBindingTable &table = getAnalysis<cir::KernelBindingTable>();
   DominanceInfo &dom = getAnalysis<DominanceInfo>();
