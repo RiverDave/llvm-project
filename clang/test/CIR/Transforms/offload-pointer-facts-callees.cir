@@ -482,3 +482,54 @@ module attributes {cir.offload.container} {
     }
   }
 }
+
+// -----
+
+// The kernel calls a device function through a pointer stored in a device
+// global. The callee cannot be resolved, so its body cannot be checked.
+// CHECK-LABEL: cir.func @k(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+      cir.return
+    }
+    cir.func @launch() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.global external @g_ptr = #cir.ptr<null> : !cir.ptr<!cir.float>
+    cir.func no_inline @bump() {
+      %g = cir.get_global @g_ptr : !cir.ptr<!cir.ptr<!cir.float>>
+      %p = cir.load %g : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %two = cir.const #cir.fp<2.0> : !cir.float
+      cir.store %two, %p : !cir.float, !cir.ptr<!cir.float>
+      cir.return
+    }
+    cir.global external @g_fn = #cir.global_view<@bump> : !cir.ptr<!cir.func<()>>
+    cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %one = cir.const #cir.fp<1.0> : !cir.float
+      cir.store %one, %arg1 : !cir.float, !cir.ptr<!cir.float>
+      %g = cir.get_global @g_fn : !cir.ptr<!cir.ptr<!cir.func<()>>>
+      %f = cir.load %g : !cir.ptr<!cir.ptr<!cir.func<()>>>, !cir.ptr<!cir.func<()>>
+      cir.call %f() : (!cir.ptr<!cir.func<()>>) -> ()
+      cir.return
+    }
+  }
+}

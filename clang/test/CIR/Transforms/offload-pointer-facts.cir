@@ -490,3 +490,44 @@ module attributes {cir.offload.container} {
     }
   }
 }
+
+// -----
+
+// The stub's address is stored in a host global, so the kernel can be launched
+// through a pointer from anywhere: not every launch site is visible.
+// CHECK-LABEL: cir.func @kern_hostptr(
+// CHECK-NOT: llvm.noalias
+// CHECK-SAME: cc(ptx_kernel)
+!s32i = !cir.int<s, 32>
+!u64i = !cir.int<u, 64>
+!void = !cir.void
+module attributes {cir.offload.container} {
+  builtin.module @host attributes {cir.offload.kind = #cir.offload<host>} {
+    cir.func private @cudaMalloc(!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+    cir.func internal private @stub_hostptr(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) attributes {cu.kernel_name = #cir.cu.kernel_name<"kern_hostptr">} {
+      cir.return
+    }
+    cir.global external @g_kernel = #cir.global_view<@stub_hostptr> : !cir.ptr<!cir.func<(!cir.ptr<!cir.float>, !cir.ptr<!cir.float>)>>
+    cir.func @launch_hostptr() {
+      %a = cir.alloca "a" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %b = cir.alloca "b" align(8) : !cir.ptr<!cir.ptr<!cir.float>>
+      %sz = cir.const #cir.int<16> : !u64i
+      %ca = cir.cast bitcast %a : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %cb = cir.cast bitcast %b : !cir.ptr<!cir.ptr<!cir.float>> -> !cir.ptr<!cir.ptr<!void>>
+      %eb = cir.call @cudaMalloc(%cb, %sz) : (!cir.ptr<!cir.ptr<!void>>, !u64i) -> !s32i
+      %pa = cir.load %a : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      %pb = cir.load %b : !cir.ptr<!cir.ptr<!cir.float>>, !cir.ptr<!cir.float>
+      cir.call @stub_hostptr(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"kern_hostptr">} : (!cir.ptr<!cir.float>, !cir.ptr<!cir.float>) -> ()
+      cir.return
+    }
+  }
+  builtin.module @device_0 attributes {cir.offload.kind = #cir.offload<device>} {
+    cir.func @kern_hostptr(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+      %v = cir.load %arg0 : !cir.ptr<!cir.float>, !cir.float
+      cir.store %v, %arg1 : !cir.float, !cir.ptr<!cir.float>
+      cir.return
+    }
+  }
+}
+
