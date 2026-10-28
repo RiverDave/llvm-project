@@ -1,0 +1,302 @@
+// RUN: rm -rf %t && split-file %s %t
+
+// A launch argument's root is the cudaMalloc whose result reaches the launch:
+// it must dominate the read of the slot, and every other write to the slot must
+// dominate it.
+
+// RUN: cir-offload-merge -combine -input=%t/after-launch.cir -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 -output=%t/after-launch.out.cir
+// RUN: FileCheck %s --check-prefix=REJECT --input-file=%t/after-launch.out.cir
+
+// RUN: cir-offload-merge -combine -input=%t/conditional.cir -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 -output=%t/conditional.out.cir
+// RUN: FileCheck %s --check-prefix=REJECT --input-file=%t/conditional.out.cir
+
+// RUN: cir-offload-merge -combine -input=%t/loop-backedge.cir -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 -output=%t/loop-backedge.out.cir
+// RUN: FileCheck %s --check-prefix=REJECT --input-file=%t/loop-backedge.out.cir
+
+// RUN: cir-offload-merge -combine -input=%t/write-after-malloc.cir -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 -output=%t/write-after-malloc.out.cir
+// RUN: FileCheck %s --check-prefix=REJECT --input-file=%t/write-after-malloc.out.cir
+
+// RUN: cir-offload-merge -combine -input=%t/copy-same-root.cir -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 -output=%t/copy-same-root.out.cir
+// RUN: FileCheck %s --check-prefix=REJECT --input-file=%t/copy-same-root.out.cir
+
+// RUN: cir-offload-merge -combine -input=%t/realloc.cir -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 -output=%t/realloc.out.cir
+// RUN: FileCheck %s --check-prefix=ACCEPT --input-file=%t/realloc.out.cir
+
+// RUN: cir-offload-merge -combine -input=%t/memcpy-in-if.cir -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 -output=%t/memcpy-in-if.out.cir
+// RUN: FileCheck %s --check-prefix=ACCEPT --input-file=%t/memcpy-in-if.out.cir
+
+// RUN: cir-offload-merge -combine -input=%t/copy-distinct.cir -input=%t/device.cir \
+// RUN:   -targets=host-x86_64-unknown-linux-gnu,cuda-nvptx64-nvidia-cuda--sm_80 -output=%t/copy-distinct.out.cir
+// RUN: FileCheck %s --check-prefix=ACCEPT --input-file=%t/copy-distinct.out.cir
+
+// REJECT-LABEL: cir.func @k(
+// REJECT-NOT: llvm.noalias
+// REJECT-SAME: cc(ptx_kernel)
+
+// ACCEPT-LABEL: cir.func @k(
+// ACCEPT-SAME: !cir.ptr<!cir.float> {llvm.noalias}, %{{.*}}: !cir.ptr<!cir.float> {llvm.noalias}
+
+//--- device.cir
+module @d attributes {cir.triple = "nvptx64-nvidia-cuda"} {
+  cir.func @k(%arg0: !cir.ptr<!cir.float>, %arg1: !cir.ptr<!cir.float>) cc(ptx_kernel) {
+    cir.return
+  }
+}
+
+// A = B; k(A, B); cudaMalloc(&A): the malloc does not reach the launch.
+//--- after-launch.cir
+!f = !cir.float
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!cir.void>>
+!u64 = !cir.int<u, 64>
+!s32 = !cir.int<s, 32>
+module @h attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func private @cudaMalloc(!ppv, !u64) -> !s32
+  cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+    cir.return
+  }
+  cir.func @launch() {
+    %a = cir.alloca "a" align(8) : !ppf
+    %b = cir.alloca "b" align(8) : !ppf
+    %sz = cir.const #cir.int<16> : !u64
+    %cb = cir.cast bitcast %b : !ppf -> !ppv
+    %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64) -> !s32
+    %bv = cir.load %b : !ppf, !pf
+    cir.store %bv, %a : !pf, !ppf
+    %pa = cir.load %a : !ppf, !pf
+    %pb = cir.load %b : !ppf, !pf
+    cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+    %ca = cir.cast bitcast %a : !ppf -> !ppv
+    %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64) -> !s32
+    cir.return
+  }
+}
+
+// A = B; if (c) cudaMalloc(&A); k(A, B): when !c, A == B at the launch.
+//--- conditional.cir
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!cir.void>>
+!u64 = !cir.int<u, 64>
+!s32 = !cir.int<s, 32>
+module @h attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func private @cudaMalloc(!ppv, !u64) -> !s32
+  cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+    cir.return
+  }
+  cir.func @launch(%c: !cir.bool) {
+    %a = cir.alloca "a" align(8) : !ppf
+    %b = cir.alloca "b" align(8) : !ppf
+    %sz = cir.const #cir.int<16> : !u64
+    %cb = cir.cast bitcast %b : !ppf -> !ppv
+    %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64) -> !s32
+    %bv = cir.load %b : !ppf, !pf
+    cir.store %bv, %a : !pf, !ppf
+    cir.if %c {
+      %ca = cir.cast bitcast %a : !ppf -> !ppv
+      %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64) -> !s32
+    }
+    %pa = cir.load %a : !ppf, !pf
+    %pb = cir.load %b : !ppf, !pf
+    cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+    cir.return
+  }
+}
+
+// cudaMalloc(&A); for (...) { k(A, B); A = B; }: the malloc dominates the
+// launch, but A = B reaches it on the second iteration.
+//--- loop-backedge.cir
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!cir.void>>
+!u64 = !cir.int<u, 64>
+!s32 = !cir.int<s, 32>
+module @h attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func private @cudaMalloc(!ppv, !u64) -> !s32
+  cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+    cir.return
+  }
+  cir.func @launch(%c: !cir.bool) {
+    %a = cir.alloca "a" align(8) : !ppf
+    %b = cir.alloca "b" align(8) : !ppf
+    %sz = cir.const #cir.int<16> : !u64
+    %ca = cir.cast bitcast %a : !ppf -> !ppv
+    %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64) -> !s32
+    %cb = cir.cast bitcast %b : !ppf -> !ppv
+    %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64) -> !s32
+    cir.for : cond {
+      cir.condition(%c)
+    } body {
+      %pa = cir.load %a : !ppf, !pf
+      %pb = cir.load %b : !ppf, !pf
+      cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+      %bv = cir.load %b : !ppf, !pf
+      cir.store %bv, %a : !pf, !ppf
+      cir.yield
+    } step {
+      cir.yield
+    }
+    cir.return
+  }
+}
+
+// cudaMalloc(&A); A = B; k(A, B): a write after the malloc overwrites it.
+//--- write-after-malloc.cir
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!cir.void>>
+!u64 = !cir.int<u, 64>
+!s32 = !cir.int<s, 32>
+module @h attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func private @cudaMalloc(!ppv, !u64) -> !s32
+  cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+    cir.return
+  }
+  cir.func @launch() {
+    %a = cir.alloca "a" align(8) : !ppf
+    %b = cir.alloca "b" align(8) : !ppf
+    %sz = cir.const #cir.int<16> : !u64
+    %ca = cir.cast bitcast %a : !ppf -> !ppv
+    %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64) -> !s32
+    %cb = cir.cast bitcast %b : !ppf -> !ppv
+    %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64) -> !s32
+    %bv = cir.load %b : !ppf, !pf
+    cir.store %bv, %a : !pf, !ppf
+    %pa = cir.load %a : !ppf, !pf
+    %pb = cir.load %b : !ppf, !pf
+    cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+    cir.return
+  }
+}
+
+// cudaMalloc(&A); C = A; k(C, A): both arguments resolve to the same malloc.
+//--- copy-same-root.cir
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!cir.void>>
+!u64 = !cir.int<u, 64>
+!s32 = !cir.int<s, 32>
+module @h attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func private @cudaMalloc(!ppv, !u64) -> !s32
+  cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+    cir.return
+  }
+  cir.func @launch() {
+    %a = cir.alloca "a" align(8) : !ppf
+    %c = cir.alloca "c" align(8) : !ppf
+    %sz = cir.const #cir.int<16> : !u64
+    %ca = cir.cast bitcast %a : !ppf -> !ppv
+    %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64) -> !s32
+    %av = cir.load %a : !ppf, !pf
+    cir.store %av, %c : !pf, !ppf
+    %pc = cir.load %c : !ppf, !pf
+    %pa = cir.load %a : !ppf, !pf
+    cir.call @stub(%pc, %pa) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+    cir.return
+  }
+}
+
+// A = B; cudaMalloc(&A); k(A, B): the earlier write is overwritten.
+//--- realloc.cir
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!cir.void>>
+!u64 = !cir.int<u, 64>
+!s32 = !cir.int<s, 32>
+module @h attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func private @cudaMalloc(!ppv, !u64) -> !s32
+  cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+    cir.return
+  }
+  cir.func @launch() {
+    %a = cir.alloca "a" align(8) : !ppf
+    %b = cir.alloca "b" align(8) : !ppf
+    %sz = cir.const #cir.int<16> : !u64
+    %ca = cir.cast bitcast %a : !ppf -> !ppv
+    %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64) -> !s32
+    %cb = cir.cast bitcast %b : !ppf -> !ppv
+    %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64) -> !s32
+    %bv = cir.load %b : !ppf, !pf
+    cir.store %bv, %a : !pf, !ppf
+    %ea2 = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64) -> !s32
+    %pa = cir.load %a : !ppf, !pf
+    %pb = cir.load %b : !ppf, !pf
+    cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+    cir.return
+  }
+}
+
+// if (c) cudaMemcpy(A, B): writes the buffers, not the slots.
+//--- memcpy-in-if.cir
+!pf = !cir.ptr<!cir.float>
+!pv = !cir.ptr<!cir.void>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!cir.void>>
+!u64 = !cir.int<u, 64>
+!s32 = !cir.int<s, 32>
+module @h attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func private @cudaMalloc(!ppv, !u64) -> !s32
+  cir.func private @cudaMemcpy(!pv, !pv, !u64, !s32) -> !s32
+  cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+    cir.return
+  }
+  cir.func @launch(%c: !cir.bool) {
+    %a = cir.alloca "a" align(8) : !ppf
+    %b = cir.alloca "b" align(8) : !ppf
+    %sz = cir.const #cir.int<16> : !u64
+    %ca = cir.cast bitcast %a : !ppf -> !ppv
+    %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64) -> !s32
+    %cb = cir.cast bitcast %b : !ppf -> !ppv
+    %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64) -> !s32
+    cir.if %c {
+      %av = cir.load %a : !ppf, !pf
+      %bv = cir.load %b : !ppf, !pf
+      %avv = cir.cast bitcast %av : !pf -> !pv
+      %bvv = cir.cast bitcast %bv : !pf -> !pv
+      %kind = cir.const #cir.int<3> : !s32
+      %r = cir.call @cudaMemcpy(%avv, %bvv, %sz, %kind) : (!pv, !pv, !u64, !s32) -> !s32
+    }
+    %pa = cir.load %a : !ppf, !pf
+    %pb = cir.load %b : !ppf, !pf
+    cir.call @stub(%pa, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+    cir.return
+  }
+}
+
+// cudaMalloc(&A); cudaMalloc(&B); C = A; k(C, B): C forwards to A's malloc.
+//--- copy-distinct.cir
+!pf = !cir.ptr<!cir.float>
+!ppf = !cir.ptr<!cir.ptr<!cir.float>>
+!ppv = !cir.ptr<!cir.ptr<!cir.void>>
+!u64 = !cir.int<u, 64>
+!s32 = !cir.int<s, 32>
+module @h attributes {cir.triple = "x86_64-unknown-linux-gnu"} {
+  cir.func private @cudaMalloc(!ppv, !u64) -> !s32
+  cir.func internal private @stub(%arg0: !pf, %arg1: !pf) attributes {cu.kernel_name = #cir.cu.kernel_name<"k">} {
+    cir.return
+  }
+  cir.func @launch() {
+    %a = cir.alloca "a" align(8) : !ppf
+    %b = cir.alloca "b" align(8) : !ppf
+    %c = cir.alloca "c" align(8) : !ppf
+    %sz = cir.const #cir.int<16> : !u64
+    %ca = cir.cast bitcast %a : !ppf -> !ppv
+    %ea = cir.call @cudaMalloc(%ca, %sz) : (!ppv, !u64) -> !s32
+    %cb = cir.cast bitcast %b : !ppf -> !ppv
+    %eb = cir.call @cudaMalloc(%cb, %sz) : (!ppv, !u64) -> !s32
+    %av = cir.load %a : !ppf, !pf
+    cir.store %av, %c : !pf, !ppf
+    %pc = cir.load %c : !ppf, !pf
+    %pb = cir.load %b : !ppf, !pf
+    cir.call @stub(%pc, %pb) {cu.kernel_name = #cir.cu.kernel_name<"k">} : (!pf, !pf) -> ()
+    cir.return
+  }
+}
